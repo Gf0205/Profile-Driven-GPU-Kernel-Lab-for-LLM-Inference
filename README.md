@@ -20,7 +20,7 @@ studies/fused_silu_mul/
   fused_silu_mul.py   # PyTorch, torch.compile, and Triton implementations
   shapes.py           # realistic decode/prefill MLP shapes
   benchmark.py        # repeatable latency/GB/s/correctness sweep
-  profile.py          # optional PyTorch profiler capture
+  profile.py          # optional PyTorch profiler table/trace capture
   README.md           # operator-specific study notes
   results/            # CSV/profiler outputs from T4/3090/A100 runs
 ```
@@ -45,16 +45,18 @@ Install dependencies on a CUDA machine:
 pip install -r requirements.txt
 ```
 
-Run the phase-1 benchmark:
+Run the phase-1 benchmark on the real GPU validation machine. Local Windows is
+used for code editing, docs, git, and result integration; it is not used for
+final CUDA/Triton performance conclusions.
 
 ```bash
-python studies/fused_silu_mul/benchmark.py --dtype float16 --output studies/fused_silu_mul/results/t4_fused_silu_mul.csv
+python studies/fused_silu_mul/benchmark.py --dtype float16 --warmup 50 --repeat 200 --no-write
 ```
 
-Run profiler evidence for one representative decode and prefill shape:
+Run profiler evidence on AutoDL RTX 3090 without writing trace files:
 
 ```bash
-python studies/fused_silu_mul/profile.py --provider all --output-dir studies/fused_silu_mul/results/profiler_t4
+python studies/fused_silu_mul/profile.py --provider all --no-write
 ```
 
 The benchmark reports latency, effective GB/s, speedup vs PyTorch unfused, gap
@@ -64,3 +66,7 @@ vs `torch.compile`, and max difference against:
 ref = torch.nn.functional.silu(gate.float()) * up.float()
 ```
 
+When running on AutoDL or Colab, copy back the full terminal output, especially
+the `BEGIN_BENCHMARK_CSV` / `END_BENCHMARK_CSV` block and profiler tables. The
+summary documents are updated locally from that returned output instead of
+committing generated result files from the cloud machine.

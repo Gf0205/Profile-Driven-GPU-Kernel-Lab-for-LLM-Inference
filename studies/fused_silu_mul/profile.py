@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import torch
+import triton
 from torch.profiler import ProfilerActivity, profile, record_function
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,7 +27,12 @@ def parse_args() -> argparse.Namespace:
         nargs="*",
         default=["llama7b_decode_b1", "llama7b_prefill_1024"],
     )
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument(
+        "--no-write",
+        action="store_true",
+        help="Print profiler tables only. Use this on cloud machines when traces should not be saved.",
+    )
     return parser.parse_args()
 
 
@@ -36,8 +42,6 @@ def run_profile(provider: str, shape_name: str, gate: torch.Tensor, up: torch.Te
         fn(gate, up)
     torch.cuda.synchronize()
 
-    trace_path = args.output_dir / f"{shape_name}_{provider}.json"
-    table_path = args.output_dir / f"{shape_name}_{provider}.txt"
     with profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
         record_shapes=True,
@@ -49,11 +53,19 @@ def run_profile(provider: str, shape_name: str, gate: torch.Tensor, up: torch.Te
                 fn(gate, up)
     torch.cuda.synchronize()
 
-    prof.export_chrome_trace(str(trace_path))
     table = prof.key_averages().table(sort_by="cuda_time_total", row_limit=20)
-    table_path.write_text(table, encoding="utf-8")
-    print(f"Wrote {trace_path}")
+    print(f"\nBEGIN_PROFILER_TABLE provider={provider} shape={shape_name}")
     print(table)
+    print(f"END_PROFILER_TABLE provider={provider} shape={shape_name}")
+
+    if not args.no_write:
+        if args.output_dir is None:
+            raise ValueError("--output-dir is required unless --no-write is set.")
+        trace_path = args.output_dir / f"{shape_name}_{provider}.json"
+        table_path = args.output_dir / f"{shape_name}_{provider}.txt"
+        prof.export_chrome_trace(str(trace_path))
+        table_path.write_text(table, encoding="utf-8")
+        print(f"Wrote {trace_path}")
 
 
 def main() -> None:
@@ -61,9 +73,14 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is required for profiling.")
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    if args.output_dir is not None and not args.no_write:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
     dtype = getattr(torch, args.dtype)
     providers = list(PROVIDERS) if args.provider == "all" else [args.provider]
+    print(
+        f"ENV device={torch.cuda.get_device_name()} torch={torch.__version__} "
+        f"triton={triton.__version__} dtype={args.dtype} warmup={args.warmup} steps={args.steps}"
+    )
 
     for shape in selected_shapes(args.shapes):
         gate = torch.randn(shape.shape, device="cuda", dtype=dtype)
@@ -74,4 +91,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

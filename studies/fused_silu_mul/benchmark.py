@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import torch
+import triton
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -27,10 +28,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--shapes", nargs="*", default=None)
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--no-write",
+        action="store_true",
+        help="Print results only. Use this on cloud benchmark machines to avoid local result files.",
+    )
     return parser.parse_args()
 
 
-def cuda_event_ms(fn, warmup: int, repeat: int) -> tuple[float, float, float]:
+def percentile(sorted_values: list[float], q: float) -> float:
+    if not sorted_values:
+        raise ValueError("Cannot compute percentile of an empty list.")
+    idx = round((len(sorted_values) - 1) * q)
+    return sorted_values[idx]
+
+
+def cuda_event_ms(fn, warmup: int, repeat: int) -> tuple[float, float, float, float, float]:
     for _ in range(warmup):
         fn()
     torch.cuda.synchronize()
@@ -45,7 +58,14 @@ def cuda_event_ms(fn, warmup: int, repeat: int) -> tuple[float, float, float]:
         torch.cuda.synchronize()
         times.append(start.elapsed_time(end))
 
-    return statistics.median(times), min(times), max(times)
+    sorted_times = sorted(times)
+    return (
+        statistics.median(times),
+        percentile(sorted_times, 0.20),
+        percentile(sorted_times, 0.80),
+        min(times),
+        max(times),
+    )
 
 
 def effective_gbps(num_elements: int, dtype: torch.dtype, latency_ms: float) -> float:
@@ -64,11 +84,13 @@ def benchmark_provider(provider: str, gate: torch.Tensor, up: torch.Tensor, args
     ref = correctness_reference(gate, up)
     max_diff = (out.float() - ref).abs().max().item()
 
-    median_ms, min_ms, max_ms = cuda_event_ms(lambda: fn(gate, up), args.warmup, args.repeat)
+    median_ms, p20_ms, p80_ms, min_ms, max_ms = cuda_event_ms(lambda: fn(gate, up), args.warmup, args.repeat)
     gbps = effective_gbps(gate.numel(), gate.dtype, median_ms)
     return {
         "provider": provider,
         "latency_ms": median_ms,
+        "p20_ms": p20_ms,
+        "p80_ms": p80_ms,
         "min_ms": min_ms,
         "max_ms": max_ms,
         "gbps": gbps,
@@ -85,6 +107,10 @@ def main() -> None:
     torch.manual_seed(args.seed)
     device_name = torch.cuda.get_device_name()
     rows = []
+    print(
+        f"ENV device={device_name} torch={torch.__version__} "
+        f"triton={triton.__version__} dtype={args.dtype} warmup={args.warmup} repeat={args.repeat}"
+    )
 
     for shape in selected_shapes(args.shapes):
         gate = torch.randn(shape.shape, device="cuda", dtype=dtype)
@@ -113,22 +139,30 @@ def main() -> None:
             )
             rows.append(row)
             print(
-                f"{shape.name:24s} {row['provider']:16s} "
-                f"{row['latency_ms']:8.4f} ms {row['gbps']:8.2f} GB/s "
+                f"{device_name} {shape.name:24s} {row['provider']:16s} "
+                f"p50={row['latency_ms']:8.4f} ms p20={row['p20_ms']:8.4f} ms p80={row['p80_ms']:8.4f} ms "
+                f"{row['gbps']:8.2f} GB/s "
                 f"speedup={row['speedup_vs_pytorch']:.2f}x "
                 f"compile_gap={row['gap_vs_torch_compile']:.2f}x "
                 f"max_diff={row['max_diff']:.3e}"
             )
 
-    if args.output:
+    if args.no_write:
+        print("\nBEGIN_BENCHMARK_CSV")
+        writer = csv.DictWriter(sys.stdout, fieldnames=list(rows[0].keys()), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+        print("END_BENCHMARK_CSV")
+    elif args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             writer.writeheader()
             writer.writerows(rows)
         print(f"Wrote {args.output}")
+    else:
+        print("\nNo output file requested. Re-run with --output PATH to save CSV, or --no-write for copyable CSV output.")
 
 
 if __name__ == "__main__":
     main()
-
