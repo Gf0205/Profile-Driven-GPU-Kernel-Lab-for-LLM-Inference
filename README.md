@@ -82,9 +82,10 @@ Install dependencies on a CUDA machine:
 pip install -r requirements.txt
 ```
 
-Run the phase-1 CUDA GEMM benchmark on the real GPU validation machine. Local Windows is
-used for code editing, docs, git, and result integration; it is not used for
-final CUDA/Triton performance conclusions.
+Run the phase-1 CUDA GEMM benchmark on the real GPU validation machine. RTX
+4090 and RTX 3090 are both acceptable, but results must be labeled by device.
+Local Windows is used for code editing, docs, git, and result integration; it is
+not used for final CUDA/Triton performance conclusions.
 
 ```bash
 python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --no-write

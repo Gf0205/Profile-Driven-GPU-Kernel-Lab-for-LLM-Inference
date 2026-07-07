@@ -16,6 +16,9 @@ from studies.cuda_gemm.gemm_ops import PROVIDERS  # noqa: E402
 from studies.cuda_gemm.shapes import selected_shapes  # noqa: E402
 
 
+DEFAULT_PROVIDERS = ["torch_matmul", "cuda_tiled", "cuda_reg_blocked", "cuda_vec4"]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark CUDA GEMM ablations.")
     parser.add_argument("--dtype", choices=["float16"], default="float16")
@@ -23,7 +26,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeat", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--shapes", nargs="*", default=None)
-    parser.add_argument("--providers", nargs="*", default=None, choices=list(PROVIDERS))
+    parser.add_argument(
+        "--providers",
+        nargs="*",
+        default=None,
+        choices=list(PROVIDERS),
+        help=f"Providers to run. Default: {' '.join(DEFAULT_PROVIDERS)}",
+    )
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--no-write", action="store_true")
     return parser.parse_args()
@@ -90,7 +99,7 @@ def main() -> None:
 
     torch.manual_seed(args.seed)
     dtype = getattr(torch, args.dtype)
-    providers = args.providers or list(PROVIDERS)
+    providers = args.providers or DEFAULT_PROVIDERS
     rows = []
     device_name = torch.cuda.get_device_name()
     print(
@@ -153,4 +162,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

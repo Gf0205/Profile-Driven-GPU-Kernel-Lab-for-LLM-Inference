@@ -31,16 +31,24 @@ reproducible CUDA performance investigation.
 | `cuda_vec4` | active | vectorized contiguous load path for aligned FP16 shapes |
 | `cuda_double_buffer` | planned | next ablation after first 3090 correctness/perf pass |
 
-## AutoDL RTX 3090 Setup
+## AutoDL RTX 4090 / 3090 Setup
 
-The screenshot configuration is suitable for this phase:
+The RTX 4090 screenshot configuration is suitable for this phase:
+
+- GPU: RTX 4090 24GB, 1 card is enough.
+- Driver/CUDA shown by AutoDL: driver `560.35.03`, CUDA `12.6`.
+- Base image shown: `PyTorch / 2.1.0 / 3.10 / ubuntu22.04 / 12.1`.
+
+The earlier RTX 3090 configuration is also suitable:
 
 - GPU: RTX 3090 24GB, 1 card is enough.
 - Driver/CUDA shown by AutoDL: driver branch `570`, CUDA `12.8`.
 - Base image shown: `PyTorch / 2.1.0 / 3.10 / ubuntu22.04 / 12.1`.
 
 Driver CUDA being newer than the image CUDA runtime is normal. Use the PyTorch
-image first; only switch images if the CUDA extension build fails.
+image first; only switch images if the CUDA extension build fails. For RTX 4090,
+Ada architecture is `sm_89`; setting `TORCH_CUDA_ARCH_LIST` makes extension
+build logs easier to interpret.
 
 Start the instance, open the terminal, then run:
 
@@ -49,6 +57,7 @@ git clone https://github.com/Gf0205/Profile-Driven-GPU-Kernel-Lab-for-LLM-Infere
 cd Profile-Driven-GPU-Kernel-Lab-for-LLM-Inference
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+export TORCH_CUDA_ARCH_LIST="8.9"
 ```
 
 If `ninja` is missing for PyTorch CUDA extension builds:
@@ -59,16 +68,25 @@ pip install ninja
 
 ## Benchmark
 
-Default AutoDL RTX 3090 command. It prints all fields and writes no files:
+Quick smoke test before the full run. This explicitly includes `cuda_naive` on
+small shapes to validate correctness and the ablation baseline:
+
+```bash
+python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 5 --repeat 10 --shapes decode_4096 decode_16_4096 --providers torch_matmul cuda_naive cuda_tiled cuda_reg_blocked cuda_vec4 --no-write
+```
+
+Default AutoDL RTX 4090/3090 command. It prints all fields and writes no files.
+It skips `cuda_naive` by default because naive GEMM on large prefill shapes can
+waste cloud time without adding useful signal:
 
 ```bash
 python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --no-write
 ```
 
-Quick smoke test before the full run:
+If the default command is stable, run a focused large-shape pass:
 
 ```bash
-python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 5 --repeat 10 --shapes decode_4096 prefill_128_4096 --no-write
+python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --shapes prefill_128_4096 prefill_512_4096 mlp_up_128 mlp_down_128 --providers torch_matmul cuda_tiled cuda_reg_blocked cuda_vec4 --no-write
 ```
 
 Copy back:
@@ -77,6 +95,10 @@ Copy back:
 - every human-readable provider line
 - the full `BEGIN_GEMM_CSV` / `END_GEMM_CSV` block
 - any extension build error if compilation fails
+
+Do not mix RTX 4090 and RTX 3090 rows in one conclusion table without labeling
+the device. RTX 4090 is Ada (`sm_89`), RTX 3090 is Ampere (`sm_86`), so the
+results are both useful but not interchangeable.
 
 ## Profiler
 
