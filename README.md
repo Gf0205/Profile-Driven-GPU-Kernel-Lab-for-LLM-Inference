@@ -26,6 +26,7 @@ naive
 -> register blocking
 -> vectorized load
 -> Tensor Core / WMMA path
+-> block-tiled multi-warp WMMA path
 -> double buffering
 -> cuBLAS comparison
 -> profiler attribution

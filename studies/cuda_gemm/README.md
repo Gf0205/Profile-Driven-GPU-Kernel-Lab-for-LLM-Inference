@@ -10,6 +10,7 @@ naive
 -> register blocking
 -> vectorized load
 -> Tensor Core / WMMA path
+-> block-tiled multi-warp WMMA path
 -> double buffering
 -> cuBLAS comparison
 -> profiler attribution
@@ -31,7 +32,8 @@ reproducible CUDA performance investigation.
 | `cuda_reg_blocked` | active | per-thread 2x2 output register blocking |
 | `cuda_vec4` | active | vectorized contiguous load path for aligned FP16 shapes |
 | `cuda_wmma` | active | first Tensor Core path using WMMA fragments |
-| `cuda_double_buffer` | planned | next ablation if Tensor Core path is worth continuing |
+| `cuda_wmma_block_tiled` | active | multi-warp CTA tile, 64x32 C tile per block |
+| `cuda_double_buffer` | planned | next ablation after block-tiled Tensor Core profiling |
 
 ## AutoDL RTX 4090 / 3090 Setup
 
@@ -74,7 +76,7 @@ Quick smoke test before the full run. This explicitly includes `cuda_naive` on
 small shapes to validate correctness and the ablation baseline:
 
 ```bash
-python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 5 --repeat 10 --shapes decode_4096 decode_16_4096 --providers torch_matmul cuda_naive cuda_tiled cuda_reg_blocked cuda_vec4 cuda_wmma --no-write
+python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 5 --repeat 10 --shapes decode_4096 decode_16_4096 --providers torch_matmul cuda_naive cuda_tiled cuda_reg_blocked cuda_vec4 cuda_wmma cuda_wmma_block_tiled --no-write
 ```
 
 Default AutoDL RTX 4090/3090 command. It prints all fields and writes no files.
@@ -90,13 +92,21 @@ path significantly shrink the custom-vs-cuBLAS gap compared with scalar
 tiling/register blocking?
 
 ```bash
-python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --providers torch_matmul cuda_reg_blocked cuda_vec4 cuda_wmma --no-write
+python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --providers torch_matmul cuda_reg_blocked cuda_vec4 cuda_wmma cuda_wmma_block_tiled --no-write
+```
+
+Block-tiled Tensor Core feasibility pass. This is the next stop/go checkpoint:
+does moving from one-warp-per-16x16 tile to a multi-warp CTA tile improve large
+prefill and MLP shapes?
+
+```bash
+python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --shapes prefill_128_4096 prefill_512_4096 mlp_up_128 mlp_down_128 qwen_mlp_up_128 --providers torch_matmul cuda_wmma cuda_wmma_block_tiled --no-write
 ```
 
 If the default command is stable, run a focused large-shape pass:
 
 ```bash
-python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --shapes prefill_128_4096 prefill_512_4096 mlp_up_128 mlp_down_128 --providers torch_matmul cuda_reg_blocked cuda_vec4 cuda_wmma --no-write
+python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --shapes prefill_128_4096 prefill_512_4096 mlp_up_128 mlp_down_128 --providers torch_matmul cuda_reg_blocked cuda_vec4 cuda_wmma cuda_wmma_block_tiled --no-write
 ```
 
 Copy back:
@@ -121,7 +131,7 @@ python studies/cuda_gemm/profiler.py --provider all --no-write
 For a smaller profiler pass:
 
 ```bash
-python studies/cuda_gemm/profiler.py --providers torch_matmul cuda_reg_blocked cuda_wmma --shapes prefill_128_4096 --no-write
+python studies/cuda_gemm/profiler.py --providers torch_matmul cuda_wmma cuda_wmma_block_tiled --shapes prefill_128_4096 --no-write
 ```
 
 ## Metrics
@@ -146,8 +156,9 @@ python studies/cuda_gemm/profiler.py --providers torch_matmul cuda_reg_blocked c
 6. Only continue optimizing a custom CUDA path when the ablation shows a clear
    reason. Falling far behind cuBLAS is still useful if the attribution is
    honest and specific.
-7. Tensor Core decision rule: if `cuda_wmma` does not materially reduce the gap
-   versus cuBLAS across realistic prefill/MLP shapes, GEMM should not be the
-   main resume result until a more serious CUTLASS-style Tensor Core kernel is
-   implemented. If it does reduce the gap, continue with shared-memory staging,
-   warp/block tiling, double buffering, and occupancy/register-pressure analysis.
+7. Tensor Core decision rule: use `cuda_wmma` and `cuda_wmma_block_tiled` to
+   decide the next engineering focus. If block tiling materially reduces the
+   gap, continue toward shared-memory pipeline and double buffering. If it does
+   not, use profiler evidence to explain whether the limit is occupancy,
+   memory staging, warp scheduling, or insufficient work per CTA before moving
+   to a CUTLASS-style redesign.

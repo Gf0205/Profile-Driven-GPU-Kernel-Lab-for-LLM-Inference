@@ -44,6 +44,10 @@ def cuda_wmma(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return _extension().gemm_wmma(a.contiguous(), b.contiguous())
 
 
+def cuda_wmma_block_tiled(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    return _extension().gemm_wmma_block_tiled(a.contiguous(), b.contiguous())
+
+
 PROVIDERS = {
     "torch_matmul": torch_matmul,
     "cuda_naive": cuda_naive,
@@ -51,4 +55,5 @@ PROVIDERS = {
     "cuda_reg_blocked": cuda_reg_blocked,
     "cuda_vec4": cuda_vec4,
     "cuda_wmma": cuda_wmma,
+    "cuda_wmma_block_tiled": cuda_wmma_block_tiled,
 }
