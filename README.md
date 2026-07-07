@@ -39,7 +39,7 @@ studies/cuda_gemm/
   gemm_ops.py              # PyTorch extension loader and providers
   shapes.py                # realistic decode/prefill GEMM shapes
   benchmark.py             # no-write cloud benchmark harness
-  profile.py               # no-write profiler table harness
+  profiler.py              # no-write profiler table harness
   README.md                # study notes and AutoDL commands
 ```
 
@@ -57,7 +57,7 @@ studies/fused_silu_mul/
   fused_silu_mul.py   # PyTorch, torch.compile, and Triton implementations
   shapes.py           # realistic decode/prefill MLP shapes
   benchmark.py        # repeatable latency/GB/s/correctness sweep
-  profile.py          # optional PyTorch profiler table/trace capture
+  profiler.py         # optional PyTorch profiler table/trace capture
   README.md           # operator-specific study notes
   results/            # CSV/profiler outputs from T4/3090/A100 runs
 ```
@@ -94,7 +94,7 @@ python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 -
 Run profiler evidence on AutoDL RTX 3090 without writing trace files:
 
 ```bash
-python studies/cuda_gemm/profile.py --provider all --no-write
+python studies/cuda_gemm/profiler.py --provider all --no-write
 ```
 
 The CUDA GEMM benchmark reports latency, TFLOP/s, speedup vs naive CUDA, gap vs

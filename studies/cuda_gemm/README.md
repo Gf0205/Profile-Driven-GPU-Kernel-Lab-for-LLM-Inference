@@ -105,13 +105,13 @@ results are both useful but not interchangeable.
 Profiler tables without writing trace files:
 
 ```bash
-python studies/cuda_gemm/profile.py --provider all --no-write
+python studies/cuda_gemm/profiler.py --provider all --no-write
 ```
 
 For a smaller profiler pass:
 
 ```bash
-python studies/cuda_gemm/profile.py --providers torch_matmul cuda_tiled cuda_reg_blocked --shapes prefill_128_4096 --no-write
+python studies/cuda_gemm/profiler.py --providers torch_matmul cuda_tiled cuda_reg_blocked --shapes prefill_128_4096 --no-write
 ```
 
 ## Metrics

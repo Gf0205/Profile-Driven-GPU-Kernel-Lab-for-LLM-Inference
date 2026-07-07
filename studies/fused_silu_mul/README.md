@@ -76,14 +76,14 @@ Print profiler evidence for one decode and one prefill shape without writing
 trace files:
 
 ```bash
-python studies/fused_silu_mul/profile.py --provider all --no-write
+python studies/fused_silu_mul/profiler.py --provider all --no-write
 ```
 
 If a Chrome trace is explicitly needed on the cloud machine, omit `--no-write`
 and provide an output directory:
 
 ```bash
-python studies/fused_silu_mul/profile.py --provider all --output-dir studies/fused_silu_mul/results/profiler_rtx3090
+python studies/fused_silu_mul/profiler.py --provider all --output-dir studies/fused_silu_mul/results/profiler_rtx3090
 ```
 
 Expected analysis questions:
