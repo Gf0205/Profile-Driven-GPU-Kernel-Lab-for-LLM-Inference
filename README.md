@@ -8,12 +8,49 @@ PyTorch baseline -> torch.compile baseline -> Triton/CUDA implementation ->
 correctness validation -> realistic shape sweep -> profiling evidence ->
 bottleneck attribution -> go/no-go conclusion.
 
+## Project Positioning
+
+The previous nano-vLLM project is system evidence: benchmark audit, scheduler
+interference optimization, KV-cache/block metrics, profiling, and go/no-go
+discipline. This repository is the main GPU performance signal: CUDA/Triton
+operator ownership under realistic LLM inference shapes.
+
 ## Current Phase
 
-Phase 1 studies **Fused SiLU-Mul**, the activation/multiplication part of
-SwiGLU MLPs used by LLaMA/Qwen-style models.
+Phase 1 studies **CUDA GEMM optimization**, because GEMM is the strongest
+screening signal for GPU performance engineering. The planned ablation is:
 
-Study directory:
+```text
+naive
+-> shared-memory tiling
+-> register blocking
+-> vectorized load
+-> double buffering
+-> cuBLAS comparison
+-> profiler attribution
+-> bottleneck analysis
+```
+
+Active study directory:
+
+```text
+studies/cuda_gemm/
+  kernels/gemm_kernels.cu  # CUDA kernels for ablation
+  gemm_ops.py              # PyTorch extension loader and providers
+  shapes.py                # realistic decode/prefill GEMM shapes
+  benchmark.py             # no-write cloud benchmark harness
+  profile.py               # no-write profiler table harness
+  README.md                # study notes and AutoDL commands
+```
+
+Phase 2 studies **Fused SiLU-Mul**, the activation/multiplication part of
+SwiGLU MLPs used by LLaMA/Qwen-style models. It is kept as the compiler-fusion
+boundary study after the CUDA GEMM main line.
+
+Phase 3 candidate: **W4A16 GEMM feasibility / quantized inference study** after
+auditing packing, scale layout, and dequant correctness.
+
+Fused SiLU-Mul directory:
 
 ```text
 studies/fused_silu_mul/
@@ -25,17 +62,17 @@ studies/fused_silu_mul/
   results/            # CSV/profiler outputs from T4/3090/A100 runs
 ```
 
-## Why Fused SiLU-Mul First
+## Why CUDA GEMM First
 
-Fused SiLU-Mul is small enough to isolate, but real enough to matter:
+CUDA GEMM lets the project answer questions that show direct performance
+ownership:
 
-- It appears on the LLaMA/Qwen SwiGLU MLP path.
-- It directly tests manual Triton fusion against compiler fusion.
-- It connects to the previous nano-vLLM profiling result where the steady
-  decode path was dominated by attention and BF16 GEMM, leaving MLP activation
-  fusion as a standalone follow-up.
-- A valid conclusion does not require Triton to beat `torch.compile`; the goal
-  is to identify when manual fusion is worth carrying.
+- how shared memory changes memory traffic
+- why register blocking helps or hurts
+- whether vectorized loads matter for realistic shapes
+- whether double buffering is effective
+- how far each custom kernel is from cuBLAS
+- whether the bottleneck is memory, compute, occupancy, or register pressure
 
 ## Quick Start
 
@@ -45,28 +82,24 @@ Install dependencies on a CUDA machine:
 pip install -r requirements.txt
 ```
 
-Run the phase-1 benchmark on the real GPU validation machine. Local Windows is
+Run the phase-1 CUDA GEMM benchmark on the real GPU validation machine. Local Windows is
 used for code editing, docs, git, and result integration; it is not used for
 final CUDA/Triton performance conclusions.
 
 ```bash
-python studies/fused_silu_mul/benchmark.py --dtype float16 --warmup 50 --repeat 200 --no-write
+python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --no-write
 ```
 
 Run profiler evidence on AutoDL RTX 3090 without writing trace files:
 
 ```bash
-python studies/fused_silu_mul/profile.py --provider all --no-write
+python studies/cuda_gemm/profile.py --provider all --no-write
 ```
 
-The benchmark reports latency, effective GB/s, speedup vs PyTorch unfused, gap
-vs `torch.compile`, and max difference against:
-
-```python
-ref = torch.nn.functional.silu(gate.float()) * up.float()
-```
+The CUDA GEMM benchmark reports latency, TFLOP/s, speedup vs naive CUDA, gap vs
+cuBLAS-backed `torch.matmul`, and correctness against `torch.matmul`.
 
 When running on AutoDL or Colab, copy back the full terminal output, especially
-the `BEGIN_BENCHMARK_CSV` / `END_BENCHMARK_CSV` block and profiler tables. The
+the `BEGIN_GEMM_CSV` / `END_GEMM_CSV` block and profiler tables. The
 summary documents are updated locally from that returned output instead of
 committing generated result files from the cloud machine.

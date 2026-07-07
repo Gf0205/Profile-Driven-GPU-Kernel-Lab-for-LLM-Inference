@@ -6,5 +6,7 @@ __pycache__/
 
 studies/fused_silu_mul/results/*.csv
 studies/fused_silu_mul/results/profiler_*/
+studies/cuda_gemm/results/*.csv
+studies/cuda_gemm/results/profiler_*/
+build/
 *.json
-
