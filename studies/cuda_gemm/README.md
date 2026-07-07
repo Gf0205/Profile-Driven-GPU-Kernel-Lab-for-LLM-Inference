@@ -9,6 +9,7 @@ naive
 -> shared-memory tiling
 -> register blocking
 -> vectorized load
+-> Tensor Core / WMMA path
 -> double buffering
 -> cuBLAS comparison
 -> profiler attribution
@@ -29,7 +30,8 @@ reproducible CUDA performance investigation.
 | `cuda_tiled` | active | shared-memory tiling ablation |
 | `cuda_reg_blocked` | active | per-thread 2x2 output register blocking |
 | `cuda_vec4` | active | vectorized contiguous load path for aligned FP16 shapes |
-| `cuda_double_buffer` | planned | next ablation after first 3090 correctness/perf pass |
+| `cuda_wmma` | active | first Tensor Core path using WMMA fragments |
+| `cuda_double_buffer` | planned | next ablation if Tensor Core path is worth continuing |
 
 ## AutoDL RTX 4090 / 3090 Setup
 
@@ -72,7 +74,7 @@ Quick smoke test before the full run. This explicitly includes `cuda_naive` on
 small shapes to validate correctness and the ablation baseline:
 
 ```bash
-python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 5 --repeat 10 --shapes decode_4096 decode_16_4096 --providers torch_matmul cuda_naive cuda_tiled cuda_reg_blocked cuda_vec4 --no-write
+python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 5 --repeat 10 --shapes decode_4096 decode_16_4096 --providers torch_matmul cuda_naive cuda_tiled cuda_reg_blocked cuda_vec4 cuda_wmma --no-write
 ```
 
 Default AutoDL RTX 4090/3090 command. It prints all fields and writes no files.
@@ -83,10 +85,18 @@ waste cloud time without adding useful signal:
 python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --no-write
 ```
 
+Tensor Core decision pass. This is the key next-stage question: does the WMMA
+path significantly shrink the custom-vs-cuBLAS gap compared with scalar
+tiling/register blocking?
+
+```bash
+python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --providers torch_matmul cuda_reg_blocked cuda_vec4 cuda_wmma --no-write
+```
+
 If the default command is stable, run a focused large-shape pass:
 
 ```bash
-python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --shapes prefill_128_4096 prefill_512_4096 mlp_up_128 mlp_down_128 --providers torch_matmul cuda_tiled cuda_reg_blocked cuda_vec4 --no-write
+python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --shapes prefill_128_4096 prefill_512_4096 mlp_up_128 mlp_down_128 --providers torch_matmul cuda_reg_blocked cuda_vec4 cuda_wmma --no-write
 ```
 
 Copy back:
@@ -111,7 +121,7 @@ python studies/cuda_gemm/profiler.py --provider all --no-write
 For a smaller profiler pass:
 
 ```bash
-python studies/cuda_gemm/profiler.py --providers torch_matmul cuda_tiled cuda_reg_blocked --shapes prefill_128_4096 --no-write
+python studies/cuda_gemm/profiler.py --providers torch_matmul cuda_reg_blocked cuda_wmma --shapes prefill_128_4096 --no-write
 ```
 
 ## Metrics
@@ -136,3 +146,8 @@ python studies/cuda_gemm/profiler.py --providers torch_matmul cuda_tiled cuda_re
 6. Only continue optimizing a custom CUDA path when the ablation shows a clear
    reason. Falling far behind cuBLAS is still useful if the attribution is
    honest and specific.
+7. Tensor Core decision rule: if `cuda_wmma` does not materially reduce the gap
+   versus cuBLAS across realistic prefill/MLP shapes, GEMM should not be the
+   main resume result until a more serious CUTLASS-style Tensor Core kernel is
+   implemented. If it does reduce the gap, continue with shared-memory staging,
+   warp/block tiling, double buffering, and occupancy/register-pressure analysis.

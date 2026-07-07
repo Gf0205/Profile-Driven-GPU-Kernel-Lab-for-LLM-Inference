@@ -16,7 +16,7 @@ from studies.cuda_gemm.gemm_ops import PROVIDERS  # noqa: E402
 from studies.cuda_gemm.shapes import selected_shapes  # noqa: E402
 
 
-DEFAULT_PROVIDERS = ["torch_matmul", "cuda_tiled", "cuda_reg_blocked", "cuda_vec4"]
+DEFAULT_PROVIDERS = ["torch_matmul", "cuda_tiled", "cuda_reg_blocked", "cuda_vec4", "cuda_wmma"]
 
 
 def parse_args() -> argparse.Namespace:

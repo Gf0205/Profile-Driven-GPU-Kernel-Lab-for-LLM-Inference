@@ -25,6 +25,7 @@ naive
 -> shared-memory tiling
 -> register blocking
 -> vectorized load
+-> Tensor Core / WMMA path
 -> double buffering
 -> cuBLAS comparison
 -> profiler attribution
