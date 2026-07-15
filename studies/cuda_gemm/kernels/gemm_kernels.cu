@@ -284,6 +284,79 @@ __global__ void gemm_wmma_block_tiled_kernel(const half* __restrict__ a,
     }
 }
 
+__global__ void gemm_wmma_shared_tiles_kernel(const half* __restrict__ a,
+                                              const half* __restrict__ b,
+                                              half* __restrict__ c,
+                                              int m,
+                                              int n,
+                                              int k) {
+    using namespace nvcuda;
+
+    constexpr int WARP_M_TILES = WMMA_BLOCK_M / WMMA_TILE;
+    constexpr int WARP_N_TILES = WMMA_BLOCK_N / WMMA_TILE;
+    __shared__ half a_tiles[WARP_M_TILES][WMMA_TILE * WMMA_TILE];
+    __shared__ half b_tiles[WARP_N_TILES][WMMA_TILE * WMMA_TILE];
+    __shared__ float c_tiles[WMMA_BLOCK_WARPS][WMMA_TILE * WMMA_TILE];
+
+    int tid = threadIdx.x;
+    int warp_id = tid / WARP_SIZE;
+    int lane = tid % WARP_SIZE;
+    int warp_m = warp_id / WARP_N_TILES;
+    int warp_n = warp_id % WARP_N_TILES;
+    int tile_m = blockIdx.y * WMMA_BLOCK_M + warp_m * WMMA_TILE;
+    int tile_n = blockIdx.x * WMMA_BLOCK_N + warp_n * WMMA_TILE;
+
+    wmma::fragment<wmma::matrix_a, WMMA_TILE, WMMA_TILE, WMMA_TILE, half, wmma::row_major> a_frag;
+    wmma::fragment<wmma::matrix_b, WMMA_TILE, WMMA_TILE, WMMA_TILE, half, wmma::row_major> b_frag;
+    wmma::fragment<wmma::accumulator, WMMA_TILE, WMMA_TILE, WMMA_TILE, float> acc_frag;
+    wmma::fill_fragment(acc_frag, 0.0f);
+
+    for (int tile_k = 0; tile_k < k; tile_k += WMMA_TILE) {
+        // One warp loads each unique A or B tile; all consumer warps reuse it.
+        if (warp_n == 0) {
+            for (int idx = lane; idx < WMMA_TILE * WMMA_TILE; idx += WARP_SIZE) {
+                int row = idx / WMMA_TILE;
+                int col = idx % WMMA_TILE;
+                int global_row = tile_m + row;
+                int global_col = tile_k + col;
+                a_tiles[warp_m][idx] = (global_row < m && global_col < k)
+                                                ? a[global_row * k + global_col]
+                                                : __float2half(0.0f);
+            }
+        }
+        if (warp_m == 0) {
+            for (int idx = lane; idx < WMMA_TILE * WMMA_TILE; idx += WARP_SIZE) {
+                int row = idx / WMMA_TILE;
+                int col = idx % WMMA_TILE;
+                int global_row = tile_k + row;
+                int global_col = tile_n + col;
+                b_tiles[warp_n][idx] = (global_row < k && global_col < n)
+                                                ? b[global_row * n + global_col]
+                                                : __float2half(0.0f);
+            }
+        }
+        __syncthreads();
+
+        wmma::load_matrix_sync(a_frag, a_tiles[warp_m], WMMA_TILE);
+        wmma::load_matrix_sync(b_frag, b_tiles[warp_n], WMMA_TILE);
+        wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
+        __syncthreads();
+    }
+
+    wmma::store_matrix_sync(c_tiles[warp_id], acc_frag, WMMA_TILE, wmma::mem_row_major);
+    __syncwarp();
+
+    for (int idx = lane; idx < WMMA_TILE * WMMA_TILE; idx += WARP_SIZE) {
+        int row = idx / WMMA_TILE;
+        int col = idx % WMMA_TILE;
+        int global_row = tile_m + row;
+        int global_col = tile_n + col;
+        if (global_row < m && global_col < n) {
+            c[global_row * n + global_col] = __float2half(c_tiles[warp_id][idx]);
+        }
+    }
+}
+
 torch::Tensor allocate_output(const torch::Tensor& a, const torch::Tensor& b) {
     TORCH_CHECK(a.is_cuda() && b.is_cuda(), "Inputs must be CUDA tensors.");
     TORCH_CHECK(a.dtype() == torch::kFloat16 && b.dtype() == torch::kFloat16, "Only float16 is supported.");
@@ -378,6 +451,20 @@ torch::Tensor gemm_wmma_block_tiled(torch::Tensor a, torch::Tensor b) {
     return c;
 }
 
+torch::Tensor gemm_wmma_shared_tiles(torch::Tensor a, torch::Tensor b) {
+    auto c = allocate_output(a, b);
+    dim3 block(WMMA_BLOCK_WARPS * WARP_SIZE);
+    dim3 grid((b.size(1) + WMMA_BLOCK_N - 1) / WMMA_BLOCK_N, (a.size(0) + WMMA_BLOCK_M - 1) / WMMA_BLOCK_M);
+    gemm_wmma_shared_tiles_kernel<<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
+        reinterpret_cast<const half*>(a.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(b.data_ptr<at::Half>()),
+        reinterpret_cast<half*>(c.data_ptr<at::Half>()),
+        a.size(0),
+        b.size(1),
+        a.size(1));
+    return c;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("gemm_naive", &gemm_naive, "Naive FP16 GEMM");
     m.def("gemm_tiled", &gemm_tiled, "Shared-memory tiled FP16 GEMM");
@@ -385,4 +472,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("gemm_vec4", &gemm_vec4, "Vectorized-load FP16 GEMM");
     m.def("gemm_wmma", &gemm_wmma, "WMMA Tensor Core FP16 GEMM");
     m.def("gemm_wmma_block_tiled", &gemm_wmma_block_tiled, "Block-tiled WMMA Tensor Core FP16 GEMM");
+    m.def("gemm_wmma_shared_tiles", &gemm_wmma_shared_tiles, "CTA-shared tile WMMA Tensor Core FP16 GEMM");
 }

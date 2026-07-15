@@ -11,7 +11,7 @@ naive
 -> vectorized load
 -> Tensor Core / WMMA path
 -> block-tiled multi-warp WMMA path
--> double buffering
+-> cooperative shared-tile WMMA path
 -> cuBLAS comparison
 -> profiler attribution
 -> bottleneck analysis
@@ -33,7 +33,7 @@ reproducible CUDA performance investigation.
 | `cuda_vec4` | active | vectorized contiguous load path for aligned FP16 shapes |
 | `cuda_wmma` | active | first Tensor Core path using WMMA fragments |
 | `cuda_wmma_block_tiled` | active | multi-warp CTA tile, 64x32 C tile per block |
-| `cuda_double_buffer` | planned | next ablation after block-tiled Tensor Core profiling |
+| `cuda_wmma_shared_tiles` | active | same 64x32 mapping with cooperative A/B staging across warps |
 
 ## AutoDL RTX 4090 / 3090 Setup
 
@@ -108,7 +108,7 @@ Hypothesis-driven diagnostic pass. This intentionally uses only three shapes:
 regresses, and `prefill_512_4096` where it is roughly neutral/slightly positive.
 
 ```bash
-python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --shapes wmma_shape_diagnostic --providers torch_matmul cuda_wmma cuda_wmma_block_tiled --no-write
+python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --shapes wmma_shape_diagnostic --providers torch_matmul cuda_wmma cuda_wmma_block_tiled cuda_wmma_shared_tiles --no-write
 ```
 
 If the default command is stable, run a focused large-shape pass:
@@ -139,7 +139,7 @@ python studies/cuda_gemm/profiler.py --provider all --no-write
 For a smaller profiler pass:
 
 ```bash
-python studies/cuda_gemm/profiler.py --providers torch_matmul cuda_wmma cuda_wmma_block_tiled --shapes wmma_shape_diagnostic --no-write
+python studies/cuda_gemm/profiler.py --providers torch_matmul cuda_wmma cuda_wmma_block_tiled cuda_wmma_shared_tiles --shapes wmma_shape_diagnostic --no-write
 ```
 
 PyTorch profiler shows launch/kernel timing but not enough architecture detail
@@ -184,12 +184,12 @@ prefill_512_4096: why is the gain only modest on square-ish large GEMM?
 6. Only continue optimizing a custom CUDA path when the ablation shows a clear
    reason. Falling far behind cuBLAS is still useful if the attribution is
    honest and specific.
-7. Tensor Core decision rule: use `cuda_wmma` and `cuda_wmma_block_tiled` to
-   decide the next engineering focus. If block tiling materially reduces the
-   gap, continue toward shared-memory pipeline and double buffering. If it does
-   not, use profiler evidence to explain whether the limit is occupancy,
-   memory staging, warp scheduling, or insufficient work per CTA before moving
-   to a CUTLASS-style redesign.
+7. Cooperative-staging decision rule: compare `cuda_wmma_block_tiled` with
+   `cuda_wmma_shared_tiles` while keeping the 64x32 CTA mapping fixed. Continue
+   only if removing duplicate A/B staging gives a stable benefit on the three
+   diagnostic shapes. Otherwise, conclude that simple cross-warp reuse is not
+   the dominant missing mechanism and stop this GEMM phase before adding a
+   deeper CUTLASS-style pipeline.
 8. Avoid broad tile sweeps until the three-shape diagnostic explains the
    shape-dependent behavior. The next tile variants should be chosen from a
    concrete hypothesis, not parameter search.

@@ -23,6 +23,7 @@ DEFAULT_PROVIDERS = [
     "cuda_vec4",
     "cuda_wmma",
     "cuda_wmma_block_tiled",
+    "cuda_wmma_shared_tiles",
 ]
 
 
