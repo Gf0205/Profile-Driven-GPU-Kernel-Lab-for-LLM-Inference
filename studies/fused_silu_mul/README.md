@@ -58,7 +58,7 @@ python studies/fused_silu_mul/benchmark.py --dtype float16 --warmup 5 --repeat 2
 If every provider reports `correct=True`, run the official RTX 4090 sweep:
 
 ```bash
-python studies/fused_silu_mul/benchmark.py --dtype float16 --warmup 25 --repeat 100 --shapes silu_official_rtx4090 --no-write
+python studies/fused_silu_mul/benchmark.py --dtype float16 --warmup 25 --repeat 100 --amortized-inner 100 --shapes silu_official_rtx4090 --no-write
 ```
 
 Optional BF16 run on GPUs with good BF16 support:
@@ -69,12 +69,33 @@ python studies/fused_silu_mul/benchmark.py --dtype bfloat16 --warmup 25 --repeat
 
 Metrics:
 
-- `latency_ms`: p50 CUDA-event latency after warmup.
-- `p20_ms`, `p80_ms`: repeat statistics for stability/noise checks.
+- `latency_ms`: isolated-call p50 with one call per CUDA-event pair and a
+  synchronization after every sample.
+- `amortized_ms`: per-call p50 from 100 consecutive calls enclosed by one
+  CUDA-event pair; `--amortized-inner` controls the batch size.
+- isolated and amortized p20/p80 fields: repeat statistics for stability.
 - `gbps`: effective lower-bound traffic, `(gate read + up read + output write)`.
+- `amortized_gbps`: the same logical traffic metric using amortized latency.
 - `speedup_vs_pytorch`: PyTorch unfused latency divided by provider latency.
 - `gap_vs_torch_compile`: provider latency divided by `torch.compile` latency.
 - `max_diff`, `rel_diff`, `correct`: correctness against the FP32 reference.
+
+## Benchmark Contract
+
+- Inputs are contiguous tensors from `torch.randn` with seed 0. Official rows
+  use FP16 and preselected LLaMA/Qwen intermediate dimensions.
+- Eager, compiled, and Triton paths receive the same tensors. Output allocation
+  is part of every provider call.
+- The `torch.compile` function is created and executed once before either timing
+  region; initial graph compilation is excluded.
+- Isolated timing intentionally captures GPU idle time while the host prepares
+  one call. Amortized timing encloses 100 continuous calls per event pair and
+  estimates sustained API-path cost. PyTorch profiler provides the third view:
+  GPU kernel execution time.
+- Correctness uses `silu(gate.float()) * up.float()` with FP16 tolerances
+  `atol=0.02`, `rtol=0.002`.
+- Inputs are reused across repeats, so effective GB/s may reflect L2 residency
+  and is not measured HBM bandwidth.
 
 Copy back:
 

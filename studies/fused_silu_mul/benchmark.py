@@ -34,6 +34,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", choices=["float16", "bfloat16"], default="float16")
     parser.add_argument("--warmup", type=int, default=25)
     parser.add_argument("--repeat", type=int, default=100)
+    parser.add_argument(
+        "--amortized-inner",
+        type=int,
+        default=100,
+        help="Calls enclosed by one CUDA-event pair for amortized timing.",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--shapes", nargs="*", default=None)
     parser.add_argument(
@@ -84,6 +90,40 @@ def cuda_event_ms(fn, warmup: int, repeat: int) -> tuple[float, float, float, fl
     )
 
 
+def amortized_cuda_event_ms(
+    fn,
+    warmup: int,
+    repeat: int,
+    inner: int,
+) -> tuple[float, float, float, float, float]:
+    if inner < 1:
+        raise ValueError("--amortized-inner must be at least 1.")
+
+    for _ in range(warmup):
+        fn()
+    torch.cuda.synchronize()
+
+    times = []
+    for _ in range(repeat):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        for _ in range(inner):
+            fn()
+        end.record()
+        torch.cuda.synchronize()
+        times.append(start.elapsed_time(end) / inner)
+
+    sorted_times = sorted(times)
+    return (
+        statistics.median(times),
+        percentile(sorted_times, 0.20),
+        percentile(sorted_times, 0.80),
+        min(times),
+        max(times),
+    )
+
+
 def effective_gbps(num_elements: int, dtype: torch.dtype, latency_ms: float) -> float:
     bytes_per_element = torch.tensor([], dtype=dtype).element_size()
     traffic_bytes = 3 * num_elements * bytes_per_element
@@ -110,7 +150,16 @@ def benchmark_provider(
     correct = torch.allclose(out.float(), ref, atol=atol, rtol=rtol)
 
     median_ms, p20_ms, p80_ms, min_ms, max_ms = cuda_event_ms(lambda: fn(gate, up), args.warmup, args.repeat)
+    amortized_ms, amortized_p20_ms, amortized_p80_ms, amortized_min_ms, amortized_max_ms = (
+        amortized_cuda_event_ms(
+            lambda: fn(gate, up),
+            args.warmup,
+            args.repeat,
+            args.amortized_inner,
+        )
+    )
     gbps = effective_gbps(gate.numel(), gate.dtype, median_ms)
+    amortized_gbps = effective_gbps(gate.numel(), gate.dtype, amortized_ms)
     return {
         "provider": provider,
         "latency_ms": median_ms,
@@ -119,6 +168,12 @@ def benchmark_provider(
         "min_ms": min_ms,
         "max_ms": max_ms,
         "gbps": gbps,
+        "amortized_ms": amortized_ms,
+        "amortized_p20_ms": amortized_p20_ms,
+        "amortized_p80_ms": amortized_p80_ms,
+        "amortized_min_ms": amortized_min_ms,
+        "amortized_max_ms": amortized_max_ms,
+        "amortized_gbps": amortized_gbps,
         "max_diff": max_diff,
         "rel_diff": rel_diff,
         "correct": correct,
@@ -141,7 +196,8 @@ def main() -> None:
         f"triton={triton.__version__} cuda={torch.version.cuda} "
         f"capability={torch.cuda.get_device_capability()} dtype={args.dtype} "
         f"atol={atol} rtol={rtol} "
-        f"warmup={args.warmup} repeat={args.repeat}"
+        f"warmup={args.warmup} repeat={args.repeat} "
+        f"amortized_inner={args.amortized_inner}"
     )
 
     for shape in selected_shapes(args.shapes):
@@ -161,6 +217,14 @@ def main() -> None:
             (row["latency_ms"] for row in provider_rows if row["provider"] == "torch_compile"),
             None,
         )
+        baseline_amortized_ms = next(
+            (row["amortized_ms"] for row in provider_rows if row["provider"] == "pytorch_unfused"),
+            None,
+        )
+        compile_amortized_ms = next(
+            (row["amortized_ms"] for row in provider_rows if row["provider"] == "torch_compile"),
+            None,
+        )
 
         for row in provider_rows:
             row.update(
@@ -174,6 +238,16 @@ def main() -> None:
                     "regime": shape.regime,
                     "speedup_vs_pytorch": (baseline_ms / row["latency_ms"]) if baseline_ms else "",
                     "gap_vs_torch_compile": (row["latency_ms"] / compile_ms) if compile_ms else "",
+                    "amortized_speedup_vs_pytorch": (
+                        baseline_amortized_ms / row["amortized_ms"]
+                        if baseline_amortized_ms
+                        else ""
+                    ),
+                    "amortized_gap_vs_torch_compile": (
+                        row["amortized_ms"] / compile_amortized_ms
+                        if compile_amortized_ms
+                        else ""
+                    ),
                 }
             )
             rows.append(row)
@@ -183,11 +257,27 @@ def main() -> None:
             compile_gap_display = (
                 "" if row["gap_vs_torch_compile"] == "" else f"{row['gap_vs_torch_compile']:.2f}x"
             )
+            amortized_speedup_display = (
+                ""
+                if row["amortized_speedup_vs_pytorch"] == ""
+                else f"{row['amortized_speedup_vs_pytorch']:.2f}x"
+            )
+            amortized_compile_gap_display = (
+                ""
+                if row["amortized_gap_vs_torch_compile"] == ""
+                else f"{row['amortized_gap_vs_torch_compile']:.2f}x"
+            )
             print(
                 f"{device_name} {shape.name:24s} {row['provider']:16s} "
-                f"p50={row['latency_ms']:8.4f} ms p20={row['p20_ms']:8.4f} ms p80={row['p80_ms']:8.4f} ms "
-                f"{row['gbps']:8.2f} GB/s "
-                f"speedup={speedup_display} compile_gap={compile_gap_display} "
+                f"isolated_p50={row['latency_ms']:8.4f} ms "
+                f"isolated_p20={row['p20_ms']:8.4f} ms isolated_p80={row['p80_ms']:8.4f} ms "
+                f"amortized_p50={row['amortized_ms']:8.4f} ms "
+                f"amortized_p20={row['amortized_p20_ms']:8.4f} ms "
+                f"amortized_p80={row['amortized_p80_ms']:8.4f} ms "
+                f"isolated_gbps={row['gbps']:8.2f} amortized_gbps={row['amortized_gbps']:8.2f} "
+                f"isolated_speedup={speedup_display} isolated_compile_gap={compile_gap_display} "
+                f"amortized_speedup={amortized_speedup_display} "
+                f"amortized_compile_gap={amortized_compile_gap_display} "
                 f"max_diff={row['max_diff']:.3e} rel_diff={row['rel_diff']:.3e} "
                 f"correct={row['correct']}"
             )

@@ -94,7 +94,7 @@ ref = torch.nn.functional.silu(gate.float()) * up.float()
 The benchmark separates three implementations: eager PyTorch with two GPU
 kernels, a standalone `torch.compile` function, and one manual Triton kernel.
 
-| Representative shape | PyTorch eager | torch.compile | Manual Triton | Interpretation |
+| Representative shape | Eager isolated | compile isolated | Triton isolated | Interpretation |
 |---|---:|---:|---:|---|
 | LLaMA decode, 1 x 11008 | **0.0213 ms** | 0.0625 ms | 0.0366 ms | Isolated-call overhead dominates |
 | LLaMA prefill, 1024 x 11008 | 0.0809 ms | 0.0625 ms | **0.0410 ms** | Triton is 1.97x over eager |
@@ -167,7 +167,7 @@ python studies/cuda_gemm/benchmark.py \
   --no-write
 
 python studies/fused_silu_mul/benchmark.py \
-  --dtype float16 --warmup 25 --repeat 100 \
+  --dtype float16 --warmup 25 --repeat 100 --amortized-inner 100 \
   --shapes silu_official_rtx4090 \
   --no-write
 ```

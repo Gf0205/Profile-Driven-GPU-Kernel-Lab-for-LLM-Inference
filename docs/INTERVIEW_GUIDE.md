@@ -107,6 +107,10 @@ This overhead may be amortized when a larger model region is compiled as one
 graph, so the project does not claim that manual Triton generally beats
 `torch.compile`.
 
+The final harness reports three timing views: isolated-call CUDA-event latency,
+continuous-call amortized latency, and profiler GPU kernel time. Keep them
+separate in explanations; none is a substitute for the others.
+
 ## Likely Questions
 
 ### Why did you stop optimizing GEMM?

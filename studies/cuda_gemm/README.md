@@ -40,6 +40,23 @@ per-warp global-to-shared staging explained the shape-dependent regression of
 the block-tiled WMMA kernel. The cooperative-staging variant answered that
 question without changing the CTA tile, warp count, or WMMA compute path.
 
+## Benchmark Contract
+
+- `A` is contiguous row-major `[M, K]`; `B` is contiguous row-major `[K, N]`.
+  Inputs come from `torch.randn` with seed 0 and use FP16.
+- The operation is `C = A @ B` with no logical transpose. Inputs are already
+  contiguous, so custom-provider `.contiguous()` checks do not add GPU copies.
+- `torch_matmul` calls PyTorch `torch.matmul`, using its cuBLAS-backed FP16 path.
+  No cuBLAS math mode or PyTorch matmul precision flag is overridden.
+- Custom WMMA kernels use FP16 inputs, FP32 accumulator fragments, and FP16
+  output. `torch.matmul` is also the correctness reference.
+- Output allocation is included for every provider. Warmup precedes measurement;
+  each measured call uses CUDA events followed by `torch.cuda.synchronize()`.
+- Official rows use 20 warmup iterations, 100 repeats, and report p20/p50/p80,
+  maximum absolute difference, and maximum-relative-to-reference-range error.
+- The published result applies only to the listed RTX 4090 shapes. It does not
+  establish the best 64x32 configuration or generalize to other GPUs/layouts.
+
 ## RTX 4090 Final Results
 
 Official environment: NVIDIA GeForce RTX 4090, PyTorch `2.1.2+cu121`, FP16,
