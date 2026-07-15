@@ -6,11 +6,13 @@ import statistics
 import sys
 from pathlib import Path
 
-import torch
-
-ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = SCRIPT_DIR.parents[1]
+sys.path = [path for path in sys.path if Path(path or ".").resolve() != SCRIPT_DIR]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+import torch
 
 from studies.cuda_gemm.gemm_ops import PROVIDERS  # noqa: E402
 from studies.cuda_gemm.shapes import selected_shapes  # noqa: E402
