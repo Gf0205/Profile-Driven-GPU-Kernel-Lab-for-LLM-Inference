@@ -19,6 +19,10 @@ value over PyTorch eager execution, and when is `torch.compile` already the
 stronger practical implementation? The Triton block size remains fixed at 1024;
 this study is not a parameter sweep.
 
+This study is now closed. The final result separates isolated operator-call
+latency from GPU kernel execution time so that framework dispatch overhead is
+not mistaken for kernel quality.
+
 ## Shape Sweep
 
 The benchmark uses decode and prefill regimes over LLaMA/Qwen-like intermediate
@@ -123,13 +127,55 @@ Expected analysis questions:
 
 ## Results Summary
 
-Raw AutoDL output is returned to Codex and is not committed. A reviewed subset
-of the official RTX 4090 run will be promoted into this table after correctness
-and timing stability are checked.
+Official environment: NVIDIA GeForce RTX 4090, PyTorch `2.1.2+cu121`, Triton
+`2.1.0`, CUDA `12.1`, FP16, 25 warmup iterations, and 100 measured repetitions.
+All providers passed correctness against the FP32 reference.
 
-| Shape | Regime | PyTorch ms | compile ms | Triton ms | Triton speedup vs PyTorch | Triton gap vs compile | Triton max_diff |
-|---|---|---:|---:|---:|---:|---:|---:|
-| pending RTX 4090 run | - | - | - | - | - | - | - |
+| Shape | Regime | PyTorch ms | compile ms | Triton ms | Triton vs PyTorch | Triton / compile | Triton GB/s | Triton rel_diff |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `llama7b_decode_b1` | decode | **0.0213** | 0.0625 | 0.0366 | 0.58x | 0.59x | 1.80 | 3.290e-4 |
+| `llama7b_decode_b16` | decode | **0.0206** | 0.0635 | 0.0358 | 0.57x | 0.56x | 29.49 | 2.631e-4 |
+| `llama7b_prefill_128` | prefill | **0.0205** | 0.0625 | 0.0376 | 0.54x | 0.60x | 224.56 | 3.360e-4 |
+| `llama7b_prefill_1024` | prefill | 0.0809 | 0.0625 | **0.0410** | **1.97x** | **0.66x** | 1651.20 | 2.491e-4 |
+| `qwen_like_decode_b1` | decode | **0.0206** | 0.0616 | 0.0364 | 0.57x | 0.59x | 3.13 | 3.547e-4 |
+| `qwen_like_prefill_512` | prefill | 0.0389 | 0.0622 | 0.0386 | 1.01x | 0.62x | 1506.73 | 2.448e-4 |
+
+`Triton / compile` is a latency ratio, so values below 1.0 favor the manual
+Triton call path. The CUDA-event harness synchronizes every repetition and
+therefore measures isolated operator-call latency, including idle time while
+Python/framework code prepares the next launch. This is intentional for direct
+operator use, but it must not be presented as pure kernel execution time.
+
+The GB/s field uses logical minimum traffic: two input reads and one output
+write. Values above RTX 4090 peak HBM bandwidth are possible because the same
+tensors are reused across repetitions and the working set can be L2-resident.
+These are effective throughput values, not proof of HBM saturation.
+
+## Profiler Evidence
+
+PyTorch profiler shows the actual GPU work per operator call:
+
+| Shape | PyTorch unfused | torch.compile fused | Triton fused |
+|---|---:|---:|---:|
+| `llama7b_decode_b1` | 2 kernels, 1.95 us total | 1 kernel, 1.00 us | 1 kernel, 1.00 us |
+| `llama7b_prefill_1024` | 2 kernels, 74.35 us total | 1 kernel, 15.00 us | 1 kernel, 14.20 us |
+| `qwen_like_prefill_512` | 2 kernels, 38.65 us total | 1 kernel, 13.00 us | 1 kernel, 12.65 us |
+
+The eager path launches separate SiLU and multiply kernels. `torch.compile`
+emits one `triton_poi_fused_mul_silu` kernel, proving that compiler fusion is
+working. On the two larger profiler shapes, its generated kernel is within
+about 2-6% of the manual Triton kernel. The larger end-to-end difference in the
+benchmark comes from the standalone compiled-function call path: profiler data
+shows TorchDynamo cache lookup, output allocation, and launch overhead around
+the fused kernel.
+
+For decode and smaller prefill shapes, all GPU kernels take only about 1-2 us.
+The eager path wins isolated-call latency because framework/dispatch overhead
+dominates the single fused kernel's saved memory traffic. At 1024 LLaMA tokens,
+the data path is large enough for fusion to matter: Triton is 1.97x faster than
+eager, while `torch.compile` is 1.29x faster than eager. The 1.01x Qwen prefill
+result is within the overlapping p20-p80 intervals and is treated as a tie, not
+as a Triton win.
 
 ## Go/No-Go Criteria
 
@@ -137,3 +183,21 @@ Manual Triton fusion is a go when it gives a stable advantage for relevant
 decode/prefill shapes or exposes behavior that `torch.compile` cannot reliably
 cover. It is a no-go when `torch.compile` already emits an equivalent fused
 kernel with equal or better latency and less maintenance cost.
+
+## Final Go/No-Go
+
+**Go:** retain the Triton implementation as a clear demonstration of fusion
+mechanics and as a useful direct-call path for sufficiently large prefill
+shapes. It removes an intermediate tensor and reduces two GPU kernels to one.
+
+**No-go:** do not continue tuning this kernel or claim that manual Triton is
+generally superior to `torch.compile`. The compiler already emits an equivalent
+fused Triton kernel with nearly identical GPU execution time. Its standalone
+operator wrapper is slower in this PyTorch 2.1.2 microbenchmark, but that cost
+may be amortized when a larger model region is compiled as one graph.
+
+The practical boundary is shape- and integration-dependent: eager execution is
+best for tiny isolated calls, while fusion becomes valuable once memory traffic
+dominates. Manual Triton ownership is justified when direct-call control or a
+larger unsupported fusion is required, not merely because the expression can be
+written by hand.

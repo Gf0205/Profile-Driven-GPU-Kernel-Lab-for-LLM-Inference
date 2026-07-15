@@ -52,9 +52,14 @@ studies/cuda_gemm/
   README.md                # study notes and AutoDL commands
 ```
 
-Phase 2, now active, studies **Fused SiLU-Mul**, the activation/multiplication part of
-SwiGLU MLPs used by LLaMA/Qwen-style models. It is kept as the compiler-fusion
-boundary study after the CUDA GEMM main line.
+Phase 2, **Fused SiLU-Mul**, is also complete. It studies the
+activation/multiplication part of SwiGLU MLPs used by LLaMA/Qwen-style models
+and establishes the compiler-fusion boundary after the CUDA GEMM main line.
+On RTX 4090, manual Triton reaches 1.97x over eager PyTorch for the largest
+LLaMA prefill shape, while tiny isolated calls remain launch/dispatch bound.
+Profiler evidence shows that `torch.compile` already emits an equivalent fused
+Triton kernel within about 2-6% of the manual kernel's GPU execution time. See
+the [Fused SiLU-Mul study](studies/fused_silu_mul/README.md).
 
 Fused SiLU-Mul directory:
 
