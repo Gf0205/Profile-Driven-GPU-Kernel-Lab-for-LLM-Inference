@@ -15,10 +15,9 @@ interference optimization, KV-cache/block metrics, profiling, and go/no-go
 discipline. This repository is the main GPU performance signal: CUDA/Triton
 operator ownership under realistic LLM inference shapes.
 
-## Current Phase
+## Study Status
 
-Phase 1 studies **CUDA GEMM optimization**, because GEMM is the strongest
-screening signal for GPU performance engineering. The planned ablation is:
+Phase 1, **CUDA GEMM Optimization**, is complete. It followed this ablation:
 
 ```text
 naive
@@ -27,13 +26,21 @@ naive
 -> vectorized load
 -> Tensor Core / WMMA path
 -> block-tiled multi-warp WMMA path
--> double buffering
+-> cooperative shared-memory staging
 -> cuBLAS comparison
 -> profiler attribution
 -> bottleneck analysis
 ```
 
-Active study directory:
+The final cooperative-staging variant removed duplicated per-warp A/B tile
+loads and improved three preselected RTX 4090 LLM shapes by 1.32-1.58x over the
+block-tiled WMMA kernel. It remains 3.65-7.99x behind cuBLAS, supporting the
+final conclusion that high-performance GEMM requires shape-aware kernel
+selection and a substantially deeper pipeline. See the
+[CUDA GEMM study](studies/cuda_gemm/README.md) for the result table and profiler
+attribution.
+
+CUDA GEMM study directory:
 
 ```text
 studies/cuda_gemm/
@@ -45,12 +52,9 @@ studies/cuda_gemm/
   README.md                # study notes and AutoDL commands
 ```
 
-Phase 2 studies **Fused SiLU-Mul**, the activation/multiplication part of
+Phase 2, now active, studies **Fused SiLU-Mul**, the activation/multiplication part of
 SwiGLU MLPs used by LLaMA/Qwen-style models. It is kept as the compiler-fusion
 boundary study after the CUDA GEMM main line.
-
-Phase 3 candidate: **W4A16 GEMM feasibility / quantized inference study** after
-auditing packing, scale layout, and dequant correctness.
 
 Fused SiLU-Mul directory:
 
@@ -61,10 +65,10 @@ studies/fused_silu_mul/
   benchmark.py        # repeatable latency/GB/s/correctness sweep
   profiler.py         # optional PyTorch profiler table/trace capture
   README.md           # operator-specific study notes
-  results/            # CSV/profiler outputs from T4/3090/A100 runs
+  results/            # ignored raw CSV/profiler outputs from cloud runs
 ```
 
-## Why CUDA GEMM First
+## Why These Two Studies
 
 CUDA GEMM lets the project answer questions that show direct performance
 ownership:
@@ -72,9 +76,11 @@ ownership:
 - how shared memory changes memory traffic
 - why register blocking helps or hurts
 - whether vectorized loads matter for realistic shapes
-- whether double buffering is effective
 - how far each custom kernel is from cuBLAS
 - whether the bottleneck is memory, compute, occupancy, or register pressure
+
+Fused SiLU-Mul complements GEMM with a memory-bound operator and asks when a
+manual Triton fusion is useful relative to the strong `torch.compile` baseline.
 
 ## Quick Start
 
@@ -85,7 +91,7 @@ pip install -r requirements.txt
 ```
 
 Run the phase-1 CUDA GEMM benchmark on the real GPU validation machine. RTX
-4090 and RTX 3090 are both acceptable, but results must be labeled by device.
+The RTX 4090 is the official validation device for current project results.
 Local Windows is used for code editing, docs, git, and result integration; it is
 not used for final CUDA/Triton performance conclusions.
 
@@ -93,7 +99,7 @@ not used for final CUDA/Triton performance conclusions.
 python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --no-write
 ```
 
-Run profiler evidence on AutoDL RTX 3090 without writing trace files:
+Run profiler evidence on AutoDL RTX 4090 without writing trace files:
 
 ```bash
 python studies/cuda_gemm/profiler.py --provider all --no-write

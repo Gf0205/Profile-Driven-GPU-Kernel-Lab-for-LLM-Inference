@@ -1,4 +1,4 @@
-# Phase 1: CUDA GEMM Optimization Study
+# CUDA GEMM Optimization Study
 
 CUDA GEMM is the first main line of this repository because it is the strongest
 screening signal for GPU performance ownership. The goal is not just to
@@ -35,18 +35,79 @@ reproducible CUDA performance investigation.
 | `cuda_wmma_block_tiled` | active | multi-warp CTA tile, 64x32 C tile per block |
 | `cuda_wmma_shared_tiles` | active | same 64x32 mapping with cooperative A/B staging across warps |
 
-## AutoDL RTX 4090 / 3090 Setup
+This study is now closed. The final optimization question was whether duplicate
+per-warp global-to-shared staging explained the shape-dependent regression of
+the block-tiled WMMA kernel. The cooperative-staging variant answered that
+question without changing the CTA tile, warp count, or WMMA compute path.
+
+## RTX 4090 Final Results
+
+Official environment: NVIDIA GeForce RTX 4090, PyTorch `2.1.2+cu121`, FP16,
+20 warmup iterations, and 100 measured repetitions. Latency is CUDA-event p50.
+The three shapes were selected before implementing cooperative staging: one
+positive case, one regression case, and one roughly neutral case.
+
+| Shape (M x N x K) | cuBLAS ms | Block-tiled ms | Shared-tiles ms | Shared vs block | Shared TFLOP/s | Gap vs cuBLAS | rel_diff |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Qwen up, 128 x 18944 x 4096 | 0.2004 | 1.1592 | **0.7322** | **1.58x** | 27.13 | 3.65x | 7.386e-4 |
+| LLaMA down, 128 x 4096 x 11008 | 0.1160 | 1.2247 | **0.9267** | **1.32x** | 12.46 | 7.99x | 4.717e-4 |
+| Prefill, 512 x 4096 x 4096 | 0.1116 | 0.7085 | **0.4997** | **1.42x** | 34.38 | 4.48x | 0.000e+0 |
+
+All rows passed the established FP16 correctness check. Their p20/p50/p80
+ranges were tight, so the improvement is not explained by timing noise.
+
+## Profiler Attribution
+
+PyTorch profiler independently reproduced the benchmark ordering using average
+CUDA kernel time over 10 calls:
+
+| Shape | Block-tiled kernel | Shared-tiles kernel | Profiler speedup |
+|---|---:|---:|---:|
+| `qwen_mlp_up_128` | 1204.1 us | 762.6 us | 1.58x |
+| `mlp_down_128` | 1281.8 us | 969.6 us | 1.32x |
+| `prefill_512_4096` | 803.9 us | 538.7 us | 1.49x |
+
+The original 64x32 block kernel allocated private A and B staging tiles for
+each of its eight warps. Warps sharing an M tile therefore loaded the same A
+data twice, while warps sharing an N tile loaded the same B data four times on
+every K-loop iteration. `cuda_wmma_shared_tiles` keeps the same output mapping
+but loads four unique A tiles and two unique B tiles cooperatively per CTA.
+The consistent 1.32-1.58x improvement validates duplicate staging as a real
+bottleneck.
+
+The cuBLAS-backed baseline dispatched different kernel signatures by shape:
+
+| Shape | cuBLAS kernel macro-tile signature | Kernel time |
+|---|---|---:|
+| `qwen_mlp_up_128` | 256x128-like | 188.9 us |
+| `mlp_down_128` | 128x64-like | 107.9 us |
+| `prefill_512_4096` | 128x128-like | 109.4 us |
+
+This is direct evidence that practical GEMM performance is shape-dependent.
+The fixed 64x32 custom mapping improves when redundant staging is removed, but
+it cannot reproduce cuBLAS's shape-aware kernel selection and deeper pipeline.
+
+## Final Go/No-Go
+
+**Go:** retain cooperative shared-memory staging as a successful architectural
+optimization. It converts a profiler-backed hypothesis into a stable 1.3-1.6x
+improvement on three preselected LLM inference shapes.
+
+**No-go:** do not extend this study into an open-ended CUTLASS-style GEMM with
+`cp.async`, multistage double buffering, warp specialization, or a broad tile
+sweep. The best custom variant remains 3.65-7.99x slower than cuBLAS, and
+`mlp_down_128` only recovers the block-tiled regression: its 0.9267 ms is
+approximately tied with the original one-warp WMMA kernel at 0.9189 ms.
+
+The result is not a claim of cuBLAS competitiveness. It is a controlled study
+of how Tensor Cores, CTA mapping, memory hierarchy, and workload shape interact.
+
+## AutoDL RTX 4090 Setup
 
 The RTX 4090 screenshot configuration is suitable for this phase:
 
 - GPU: RTX 4090 24GB, 1 card is enough.
 - Driver/CUDA shown by AutoDL: driver `560.35.03`, CUDA `12.6`.
-- Base image shown: `PyTorch / 2.1.0 / 3.10 / ubuntu22.04 / 12.1`.
-
-The earlier RTX 3090 configuration is also suitable:
-
-- GPU: RTX 3090 24GB, 1 card is enough.
-- Driver/CUDA shown by AutoDL: driver branch `570`, CUDA `12.8`.
 - Base image shown: `PyTorch / 2.1.0 / 3.10 / ubuntu22.04 / 12.1`.
 
 Driver CUDA being newer than the image CUDA runtime is normal. Use the PyTorch
@@ -79,7 +140,7 @@ small shapes to validate correctness and the ablation baseline:
 python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 5 --repeat 10 --shapes decode_4096 decode_16_4096 --providers torch_matmul cuda_naive cuda_tiled cuda_reg_blocked cuda_vec4 cuda_wmma cuda_wmma_block_tiled --no-write
 ```
 
-Default AutoDL RTX 4090/3090 command. It prints all fields and writes no files.
+Default AutoDL RTX 4090 command. It prints all fields and writes no files.
 It skips `cuda_naive` by default because naive GEMM on large prefill shapes can
 waste cloud time without adding useful signal:
 
@@ -124,9 +185,8 @@ Copy back:
 - the full `BEGIN_GEMM_CSV` / `END_GEMM_CSV` block
 - any extension build error if compilation fails
 
-Do not mix RTX 4090 and RTX 3090 rows in one conclusion table without labeling
-the device. RTX 4090 is Ada (`sm_89`), RTX 3090 is Ampere (`sm_86`), so the
-results are both useful but not interchangeable.
+Do not mix rows from different GPU models in one conclusion table. The official
+results above are from RTX 4090 Ada (`sm_89`).
 
 ## Profiler
 
