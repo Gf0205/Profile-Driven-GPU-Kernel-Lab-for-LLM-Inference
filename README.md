@@ -16,7 +16,7 @@ performance reasoning.
 | Study | Question | RTX 4090 result | Decision |
 |---|---|---|---|
 | CUDA Tensor Core GEMM | Does cross-warp cooperative staging remove an important limitation in the fixed 64x32 WMMA kernel? | **1.32-1.58x** over the previous block-tiled custom kernel on three preselected LLM shapes | Hypothesis supported; stop before an open-ended CUTLASS-style redesign |
-| Fused SiLU-Mul | When does manual Triton fusion help relative to eager PyTorch and `torch.compile`? | Up to **1.97x** over eager on large prefill; compiler-generated and manual fused kernels were within about **2-6%** GPU time | Fusion is shape-dependent; no further manual tuning justified |
+| Fused SiLU-Mul | When does manual Triton fusion help relative to eager PyTorch and `torch.compile`? | Large prefill: **2.06x isolated** and **3.35x single-stream amortized** over eager; compiler/manual fused kernels had comparable GPU time | Fusion is shape-dependent; no further manual tuning justified |
 
 The custom GEMM is not presented as cuBLAS-competitive: the final variant is
 still 3.65-7.99x slower than cuBLAS. The value of the study is the measured
@@ -94,15 +94,16 @@ ref = torch.nn.functional.silu(gate.float()) * up.float()
 The benchmark separates three implementations: eager PyTorch with two GPU
 kernels, a standalone `torch.compile` function, and one manual Triton kernel.
 
-| Representative shape | Eager isolated | compile isolated | Triton isolated | Interpretation |
-|---|---:|---:|---:|---|
-| LLaMA decode, 1 x 11008 | **0.0213 ms** | 0.0625 ms | 0.0366 ms | Isolated-call overhead dominates |
-| LLaMA prefill, 1024 x 11008 | 0.0809 ms | 0.0625 ms | **0.0410 ms** | Triton is 1.97x over eager |
-| Qwen prefill, 512 x 18944 | 0.0389 ms | 0.0622 ms | 0.0386 ms | Eager and Triton are statistically tied |
+| Representative shape | Isolated: eager / compile / Triton | Amortized: eager / compile / Triton | Interpretation |
+|---|---|---|---|
+| LLaMA decode, 1 x 11008 | **0.0207** / 0.0618 / 0.0358 ms | **0.0106** / 0.0434 / 0.0232 ms | Small direct calls favor eager |
+| LLaMA prefill, 1024 x 11008 | 0.0817 / 0.0594 / **0.0396** ms | 0.0764 / 0.0419 / **0.0228** ms | Triton is 2.06x isolated, 3.35x amortized over eager |
+| Qwen prefill, 512 x 18944 | 0.0410 / 0.0593 / **0.0379** ms | 0.0375 / 0.0419 / **0.0233** ms | Triton is 1.61x amortized over eager |
 
 Profiler evidence confirmed that `torch.compile` emitted one
-`triton_poi_fused_mul_silu` kernel. On the two larger profiler shapes, its GPU
-execution time was within about 2-6% of the manual Triton kernel. The larger
+`triton_poi_fused_mul_silu` kernel. On the two larger profiler shapes, the
+compiler/manual GPU-time point estimates differed by about 2-6% and are treated
+as comparable, not as evidence of a material manual-kernel advantage. The larger
 standalone-call interval is consistent with non-kernel invocation-path behavior,
 including runtime dispatch, guard/cache lookup, allocation, submission cadence,
 and possible stream idle time. It cannot be decomposed into exact host-side
@@ -119,7 +120,7 @@ This project demonstrates:
 - FP16 CUDA and WMMA Tensor Core implementation
 - shared-memory tiling, register blocking, and cross-warp data reuse
 - Triton elementwise fusion and comparison with compiler-generated fusion
-- correctness-first benchmarking with p20/p50/p80 repeat statistics
+- correctness-first benchmarking with p20/p50/p80/p95/p99 repeat statistics
 - shape-aware performance analysis and negative-result discipline
 
 It does not claim:

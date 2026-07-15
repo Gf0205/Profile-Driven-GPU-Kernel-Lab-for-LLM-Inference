@@ -138,8 +138,8 @@ Expected analysis questions:
    the best practical implementation.
 3. Analyze by shape: decode-like small token counts and prefill-like larger
    token counts should be discussed separately.
-4. Use all performance fields: latency, GB/s, speedup vs PyTorch unfused, gap
-   vs `torch.compile`, and p20/p50/p80 repeat statistics.
+4. Use all performance fields: isolated and amortized intervals, speedup vs
+   PyTorch unfused, gap vs `torch.compile`, and p20/p50/p80/p95/p99 statistics.
 5. Interpret small-shape variance as possible launch overhead or timing noise.
    Interpret large-shape saturation as a memory-bandwidth question before
    blindly tuning `BLOCK_SIZE`.
@@ -152,17 +152,32 @@ Expected analysis questions:
 ## Results Summary
 
 Official environment: NVIDIA GeForce RTX 4090, PyTorch `2.1.2+cu121`, Triton
-`2.1.0`, CUDA `12.1`, FP16, 25 warmup iterations, and 100 measured repetitions.
-All providers passed correctness against the FP32 reference.
+`2.1.0`, CUDA `12.1`, FP16, 25 warmup iterations, 100 measured repetitions,
+and 100 calls per amortized sample. All 18 provider/shape rows passed the FP32
+reference check; observed `max_diff <= 7.787e-3` and `rel_diff <= 5.233e-4`.
 
-| Shape | Regime | PyTorch ms | compile ms | Triton ms | Triton vs PyTorch | Triton / compile | Triton GB/s | Triton rel_diff |
-|---|---|---:|---:|---:|---:|---:|---:|---:|
-| `llama7b_decode_b1` | decode | **0.0213** | 0.0625 | 0.0366 | 0.58x | 0.59x | 1.80 | 3.290e-4 |
-| `llama7b_decode_b16` | decode | **0.0206** | 0.0635 | 0.0358 | 0.57x | 0.56x | 29.49 | 2.631e-4 |
-| `llama7b_prefill_128` | prefill | **0.0205** | 0.0625 | 0.0376 | 0.54x | 0.60x | 224.56 | 3.360e-4 |
-| `llama7b_prefill_1024` | prefill | 0.0809 | 0.0625 | **0.0410** | **1.97x** | **0.66x** | 1651.20 | 2.491e-4 |
-| `qwen_like_decode_b1` | decode | **0.0206** | 0.0616 | 0.0364 | 0.57x | 0.59x | 3.13 | 3.547e-4 |
-| `qwen_like_prefill_512` | prefill | 0.0389 | 0.0622 | 0.0386 | 1.01x | 0.62x | 1506.73 | 2.448e-4 |
+Isolated-call CUDA-event interval:
+
+| Shape | Regime | Eager ms | compile ms | Triton ms | Triton vs eager |
+|---|---|---:|---:|---:|---:|
+| `llama7b_decode_b1` | decode | **0.0207** | 0.0618 | 0.0358 | 0.58x |
+| `llama7b_decode_b16` | decode | **0.0203** | 0.0586 | 0.0360 | 0.56x |
+| `llama7b_prefill_128` | prefill | **0.0205** | 0.0593 | 0.0351 | 0.58x |
+| `llama7b_prefill_1024` | prefill | 0.0817 | 0.0594 | **0.0396** | **2.06x** |
+| `qwen_like_decode_b1` | decode | **0.0205** | 0.0593 | 0.0358 | 0.57x |
+| `qwen_like_prefill_512` | prefill | 0.0410 | 0.0593 | **0.0379** | **1.08x** |
+
+Single-stream steady-state per-call interval under continuous asynchronous
+submission:
+
+| Shape | Regime | Eager ms | compile ms | Triton ms | Triton vs eager | Triton / compile |
+|---|---|---:|---:|---:|---:|---:|
+| `llama7b_decode_b1` | decode | **0.0106** | 0.0434 | 0.0232 | 0.46x | 0.53x |
+| `llama7b_decode_b16` | decode | **0.0107** | 0.0423 | 0.0232 | 0.46x | 0.55x |
+| `llama7b_prefill_128` | prefill | **0.0107** | 0.0423 | 0.0232 | 0.46x | 0.55x |
+| `llama7b_prefill_1024` | prefill | 0.0764 | 0.0419 | **0.0228** | **3.35x** | **0.54x** |
+| `qwen_like_decode_b1` | decode | **0.0106** | 0.0425 | 0.0233 | 0.46x | 0.55x |
+| `qwen_like_prefill_512` | prefill | 0.0375 | 0.0419 | **0.0233** | **1.61x** | **0.56x** |
 
 `Triton / compile` is a latency ratio, so values below 1.0 favor the manual
 Triton call path. In the isolated protocol, each CUDA-event pair encloses one
@@ -174,6 +189,22 @@ The GB/s field uses logical minimum traffic: two input reads and one output
 write. Values above RTX 4090 peak HBM bandwidth are possible because the same
 tensors are reused across repetitions and the working set can be L2-resident.
 These are effective throughput values, not proof of HBM saturation.
+
+### Tail Stability Check
+
+The first official `llama7b_prefill_128` Triton run had an anomalous amortized
+p80. A focused 500-repeat test rotated all three provider orders:
+
+| Provider order | Triton p50 us | p80 us | p95 us | p99 us |
+|---|---:|---:|---:|---:|
+| eager, compile, Triton | 23.92 | 24.01 | 24.19 | 42.72 |
+| Triton, eager, compile | 22.80 | 22.89 | 22.97 | 23.33 |
+| compile, Triton, eager | 23.61 | 23.71 | 23.81 | 24.02 |
+
+The earlier p80 regression did not reproduce: all three p80 values stayed close
+to their medians, with no systematic provider-order effect. One run retained a
+rare p99 outlier, so tiny/medium direct-call tail latency is treated as
+environment/runtime-sensitive even though the core distribution is stable.
 
 ## Profiler Evidence
 
@@ -187,19 +218,20 @@ PyTorch profiler shows the actual GPU work per operator call:
 
 The eager path launches separate SiLU and multiply kernels. `torch.compile`
 emits one `triton_poi_fused_mul_silu` kernel, proving that compiler fusion is
-working. On the two larger profiler shapes, its generated kernel is within
-about 2-6% of the manual Triton kernel. The larger standalone-call difference is
+working. On the two larger profiler shapes, compiler/manual GPU-time point
+estimates differed by about 2-6% and are treated as comparable. The larger
+standalone-call difference is
 consistent with non-kernel invocation behavior around the compiled callable,
 but CUDA-event and profiler runs cannot assign an exact number of microseconds
 to wrapper, guard/cache lookup, allocation, dispatch, or queue starvation.
 
 For decode and smaller prefill shapes, all GPU kernels take only about 1-2 us.
-The eager path wins isolated-call latency because framework/dispatch overhead
-dominates the single fused kernel's saved memory traffic. At 1024 LLaMA tokens,
-the data path is large enough for fusion to matter: Triton is 1.97x faster than
-eager, while `torch.compile` is 1.29x faster than eager. The 1.01x Qwen prefill
-result is within the overlapping p20-p80 intervals and is treated as a tie, not
-as a Triton win.
+The eager path wins both direct-call protocols on the smaller shapes because
+the fused kernel's saved GPU work does not offset the surrounding invocation
+path. At 1024 LLaMA tokens, Triton is 2.06x over eager under isolated timing and
+3.35x under the single-stream steady-state protocol. On Qwen prefill 512, the
+latest isolated result is a modest 1.08x, while the stable amortized result is
+1.61x. These are operator-level protocol results, not whole-model speedups.
 
 ## Go/No-Go Criteria
 

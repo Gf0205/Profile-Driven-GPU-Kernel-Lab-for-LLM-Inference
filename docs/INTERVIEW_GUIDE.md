@@ -18,12 +18,13 @@ shapes by 1.32-1.58x, but the kernel remained 3.65-7.99x behind cuBLAS. The
 result showed both the value of cross-warp reuse and the limitation of one fixed
 kernel strategy against shape-aware library dispatch.
 
-For SiLU-Mul, manual Triton reached 1.97x over eager PyTorch on a large prefill
-shape, while eager remained best for tiny isolated calls. Profiler evidence
-showed that `torch.compile` already emitted an equivalent fused Triton kernel
-within about 2-6% of the manual kernel's GPU time. That led to a no-go on further
-manual tuning: the practical boundary depends on shape and integration overhead,
-not simply on whether an expression can be fused by hand.
+For SiLU-Mul, manual Triton reached 2.06x over eager under isolated timing and
+3.35x under a single-stream steady-state protocol on a large prefill shape,
+while eager remained best for tiny calls. Profiler evidence showed that
+`torch.compile` already emitted an equivalent fused Triton kernel with
+comparable observed GPU time. That led to a no-go on further manual tuning: the
+practical boundary depends on shape and integration behavior, not simply on
+whether an expression can be fused by hand.
 
 ## GEMM Deep Dive
 
@@ -87,18 +88,19 @@ When is a manual Triton fusion useful compared with eager PyTorch and a strong
 
 ### Result By Regime
 
-- Tiny decode: eager wins isolated-call latency because all kernels take only
-  about 1-2 us and runtime dispatch dominates.
-- Large LLaMA prefill: Triton is 1.97x faster than eager by reducing two GPU
-  kernels and an intermediate tensor to one fused kernel.
-- Qwen prefill: Triton and eager are treated as tied because their p20-p80
-  intervals overlap.
+- Tiny decode: eager wins both direct-call protocols because all kernels take
+  only about 1-2 us and non-kernel invocation behavior dominates the interval.
+- Large LLaMA prefill: Triton is 2.06x over eager under isolated timing and
+  3.35x under the single-stream steady-state protocol.
+- Qwen prefill: Triton is 1.61x over eager under the amortized direct-call
+  protocol; this is not a whole-model speedup.
 
 ### What torch.compile Actually Did
 
 Profiler output contained one `triton_poi_fused_mul_silu` kernel, so compiler
 fusion worked. On the larger shapes, compiler-generated and manual Triton GPU
-kernel times differed by only about 2-6%.
+time point estimates differed by about 2-6% and are treated as comparable, not
+as a statistically meaningful manual-kernel win.
 
 The benchmark compiled and warmed the function before timing. Therefore the
 standalone-call gap is not initial compilation cost. It is consistent with
@@ -113,6 +115,11 @@ single-stream steady-state per-call interval under continuous asynchronous
 submission, and profiler GPU kernel time. CUDA events do not directly measure
 CPU wrapper time; host delays appear only when they leave the stream idle. Keep
 the three views separate because none is a substitute for the others.
+
+A three-order, 500-repeat check of `llama7b_prefill_128` found stable Triton
+p50-p95 values across provider orders. One run retained a rare p99 outlier, so
+tail latency is disclosed as environment/runtime-sensitive rather than treated
+as a persistent p80 regression.
 
 ## Likely Questions
 
@@ -166,12 +173,13 @@ kernel time.
 - Developed FP16 WMMA Tensor Core GEMM variants with block tiling and
   cooperative shared-memory staging, improving three representative LLM shapes
   by 1.32-1.58x over the previous custom kernel.
-- Compared custom GEMM against cuBLAS and used profiler evidence to attribute
-  the remaining gap to fixed custom mapping versus shape-specific library kernel
-  selection and a deeper Tensor Core pipeline.
-- Implemented a fused Triton SiLU-Mul operator and measured up to 1.97x over
-  eager PyTorch on large prefill, while showing that `torch.compile` generated
-  a fused kernel within about 2-6% of manual Triton's GPU execution time.
+- Compared custom GEMM against cuBLAS and analyzed the remaining gap in the
+  context of fixed custom mapping, shape-specific library kernel signatures,
+  and the custom kernel's limited pipeline depth.
+- Implemented a fused Triton SiLU-Mul operator and measured 2.06x isolated and
+  3.35x single-stream amortized improvement over eager on a large prefill shape,
+  while showing comparable GPU execution time to the `torch.compile`-generated
+  fused kernel.
 
 ## Claims To Avoid
 
