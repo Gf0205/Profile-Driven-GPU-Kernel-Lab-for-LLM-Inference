@@ -65,7 +65,11 @@ def percentile(sorted_values: list[float], q: float) -> float:
     return sorted_values[idx]
 
 
-def cuda_event_ms(fn, warmup: int, repeat: int) -> tuple[float, float, float, float, float]:
+def cuda_event_ms(
+    fn,
+    warmup: int,
+    repeat: int,
+) -> tuple[float, float, float, float, float, float, float]:
     for _ in range(warmup):
         fn()
     torch.cuda.synchronize()
@@ -85,6 +89,8 @@ def cuda_event_ms(fn, warmup: int, repeat: int) -> tuple[float, float, float, fl
         statistics.median(times),
         percentile(sorted_times, 0.20),
         percentile(sorted_times, 0.80),
+        percentile(sorted_times, 0.95),
+        percentile(sorted_times, 0.99),
         min(times),
         max(times),
     )
@@ -95,7 +101,7 @@ def amortized_cuda_event_ms(
     warmup: int,
     repeat: int,
     inner: int,
-) -> tuple[float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, float, float]:
     if inner < 1:
         raise ValueError("--amortized-inner must be at least 1.")
 
@@ -119,6 +125,8 @@ def amortized_cuda_event_ms(
         statistics.median(times),
         percentile(sorted_times, 0.20),
         percentile(sorted_times, 0.80),
+        percentile(sorted_times, 0.95),
+        percentile(sorted_times, 0.99),
         min(times),
         max(times),
     )
@@ -149,8 +157,18 @@ def benchmark_provider(
     atol, rtol = TOLERANCES[args.dtype]
     correct = torch.allclose(out.float(), ref, atol=atol, rtol=rtol)
 
-    median_ms, p20_ms, p80_ms, min_ms, max_ms = cuda_event_ms(lambda: fn(gate, up), args.warmup, args.repeat)
-    amortized_ms, amortized_p20_ms, amortized_p80_ms, amortized_min_ms, amortized_max_ms = (
+    median_ms, p20_ms, p80_ms, p95_ms, p99_ms, min_ms, max_ms = cuda_event_ms(
+        lambda: fn(gate, up), args.warmup, args.repeat
+    )
+    (
+        amortized_ms,
+        amortized_p20_ms,
+        amortized_p80_ms,
+        amortized_p95_ms,
+        amortized_p99_ms,
+        amortized_min_ms,
+        amortized_max_ms,
+    ) = (
         amortized_cuda_event_ms(
             lambda: fn(gate, up),
             args.warmup,
@@ -165,12 +183,16 @@ def benchmark_provider(
         "latency_ms": median_ms,
         "p20_ms": p20_ms,
         "p80_ms": p80_ms,
+        "p95_ms": p95_ms,
+        "p99_ms": p99_ms,
         "min_ms": min_ms,
         "max_ms": max_ms,
         "gbps": gbps,
         "amortized_ms": amortized_ms,
         "amortized_p20_ms": amortized_p20_ms,
         "amortized_p80_ms": amortized_p80_ms,
+        "amortized_p95_ms": amortized_p95_ms,
+        "amortized_p99_ms": amortized_p99_ms,
         "amortized_min_ms": amortized_min_ms,
         "amortized_max_ms": amortized_max_ms,
         "amortized_gbps": amortized_gbps,
@@ -271,9 +293,12 @@ def main() -> None:
                 f"{device_name} {shape.name:24s} {row['provider']:16s} "
                 f"isolated_p50={row['latency_ms']:8.4f} ms "
                 f"isolated_p20={row['p20_ms']:8.4f} ms isolated_p80={row['p80_ms']:8.4f} ms "
+                f"isolated_p95={row['p95_ms']:8.4f} ms isolated_p99={row['p99_ms']:8.4f} ms "
                 f"amortized_p50={row['amortized_ms']:8.4f} ms "
                 f"amortized_p20={row['amortized_p20_ms']:8.4f} ms "
                 f"amortized_p80={row['amortized_p80_ms']:8.4f} ms "
+                f"amortized_p95={row['amortized_p95_ms']:8.4f} ms "
+                f"amortized_p99={row['amortized_p99_ms']:8.4f} ms "
                 f"isolated_gbps={row['gbps']:8.2f} amortized_gbps={row['amortized_gbps']:8.2f} "
                 f"isolated_speedup={speedup_display} isolated_compile_gap={compile_gap_display} "
                 f"amortized_speedup={amortized_speedup_display} "

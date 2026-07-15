@@ -101,15 +101,18 @@ fusion worked. On the larger shapes, compiler-generated and manual Triton GPU
 kernel times differed by only about 2-6%.
 
 The benchmark compiled and warmed the function before timing. Therefore the
-standalone-call gap is not initial compilation cost. Profiler data instead shows
-runtime Dynamo cache lookup, wrapper, output-allocation, and launch-path cost.
-This overhead may be amortized when a larger model region is compiled as one
-graph, so the project does not claim that manual Triton generally beats
-`torch.compile`.
+standalone-call gap is not initial compilation cost. It is consistent with
+non-kernel invocation behavior such as guard/cache lookup, allocation, runtime
+dispatch, submission cadence, and stream starvation, but the measurements do
+not assign an exact microsecond cost to any one layer. Whole-graph compilation
+may change the trade-off, so the project does not claim that manual Triton
+generally beats `torch.compile`.
 
-The final harness reports three timing views: isolated-call CUDA-event latency,
-continuous-call amortized latency, and profiler GPU kernel time. Keep them
-separate in explanations; none is a substitute for the others.
+The final harness reports three timing views: isolated-call CUDA-event interval,
+single-stream steady-state per-call interval under continuous asynchronous
+submission, and profiler GPU kernel time. CUDA events do not directly measure
+CPU wrapper time; host delays appear only when they leave the stream idle. Keep
+the three views separate because none is a substitute for the others.
 
 ## Likely Questions
 

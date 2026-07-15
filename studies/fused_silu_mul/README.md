@@ -73,7 +73,7 @@ Metrics:
   synchronization after every sample.
 - `amortized_ms`: per-call p50 from 100 consecutive calls enclosed by one
   CUDA-event pair; `--amortized-inner` controls the batch size.
-- isolated and amortized p20/p80 fields: repeat statistics for stability.
+- isolated and amortized p20/p80/p95/p99 fields: repeat and tail statistics.
 - `gbps`: effective lower-bound traffic, `(gate read + up read + output write)`.
 - `amortized_gbps`: the same logical traffic metric using amortized latency.
 - `speedup_vs_pytorch`: PyTorch unfused latency divided by provider latency.
@@ -88,10 +88,13 @@ Metrics:
   is part of every provider call.
 - The `torch.compile` function is created and executed once before either timing
   region; initial graph compilation is excluded.
-- Isolated timing intentionally captures GPU idle time while the host prepares
-  one call. Amortized timing encloses 100 continuous calls per event pair and
-  estimates sustained API-path cost. PyTorch profiler provides the third view:
-  GPU kernel execution time.
+- CUDA events measure elapsed time on one CUDA stream; they do not directly
+  measure Python or CPU wrapper time. Host-side submission/allocation delays are
+  reflected only when they leave the stream idle between the two events.
+- Isolated timing uses one call per event pair. Amortized timing reports the
+  single-stream steady-state per-call interval from 100 continuous asynchronous
+  submissions. PyTorch profiler provides the third view: GPU kernel execution
+  time.
 - Correctness uses `silu(gate.float()) * up.float()` with FP16 tolerances
   `atol=0.02`, `rtol=0.002`.
 - Inputs are reused across repeats, so effective GB/s may reflect L2 residency
@@ -162,10 +165,10 @@ All providers passed correctness against the FP32 reference.
 | `qwen_like_prefill_512` | prefill | 0.0389 | 0.0622 | 0.0386 | 1.01x | 0.62x | 1506.73 | 2.448e-4 |
 
 `Triton / compile` is a latency ratio, so values below 1.0 favor the manual
-Triton call path. The CUDA-event harness synchronizes every repetition and
-therefore measures isolated operator-call latency, including idle time while
-Python/framework code prepares the next launch. This is intentional for direct
-operator use, but it must not be presented as pure kernel execution time.
+Triton call path. In the isolated protocol, each CUDA-event pair encloses one
+call and is followed by synchronization. Host delays affect the event interval
+only when they starve the stream of work. The result must not be presented as
+either direct CPU wrapper time or pure kernel execution time.
 
 The GB/s field uses logical minimum traffic: two input reads and one output
 write. Values above RTX 4090 peak HBM bandwidth are possible because the same
@@ -185,10 +188,10 @@ PyTorch profiler shows the actual GPU work per operator call:
 The eager path launches separate SiLU and multiply kernels. `torch.compile`
 emits one `triton_poi_fused_mul_silu` kernel, proving that compiler fusion is
 working. On the two larger profiler shapes, its generated kernel is within
-about 2-6% of the manual Triton kernel. The larger end-to-end difference in the
-benchmark comes from the standalone compiled-function call path: profiler data
-shows TorchDynamo cache lookup, output allocation, and launch overhead around
-the fused kernel.
+about 2-6% of the manual Triton kernel. The larger standalone-call difference is
+consistent with non-kernel invocation behavior around the compiled callable,
+but CUDA-event and profiler runs cannot assign an exact number of microseconds
+to wrapper, guard/cache lookup, allocation, dispatch, or queue starvation.
 
 For decode and smaller prefill shapes, all GPU kernels take only about 1-2 us.
 The eager path wins isolated-call latency because framework/dispatch overhead
@@ -213,9 +216,10 @@ shapes. It removes an intermediate tensor and reduces two GPU kernels to one.
 
 **No-go:** do not continue tuning this kernel or claim that manual Triton is
 generally superior to `torch.compile`. The compiler already emits an equivalent
-fused Triton kernel with nearly identical GPU execution time. Its standalone
-operator wrapper is slower in this PyTorch 2.1.2 microbenchmark, but that cost
-may be amortized when a larger model region is compiled as one graph.
+fused Triton kernel with comparable observed GPU execution time. Its standalone
+compiled callable has a higher measured direct-call interval in this PyTorch
+2.1.2 microbenchmark, but the cause cannot be reduced to wrapper time alone and
+whole-graph compilation may change the trade-off.
 
 The practical boundary is shape- and integration-dependent: eager execution is
 best for tiny isolated calls, while fusion becomes valuable once memory traffic

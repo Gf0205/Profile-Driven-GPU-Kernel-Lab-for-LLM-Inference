@@ -103,9 +103,10 @@ kernels, a standalone `torch.compile` function, and one manual Triton kernel.
 Profiler evidence confirmed that `torch.compile` emitted one
 `triton_poi_fused_mul_silu` kernel. On the two larger profiler shapes, its GPU
 execution time was within about 2-6% of the manual Triton kernel. The larger
-standalone-call latency difference came from runtime dispatch, Dynamo cache
-lookup, output allocation, and launch-path overhead, not from a fundamentally
-better manual kernel. Initial compilation was outside the timed region.
+standalone-call interval is consistent with non-kernel invocation-path behavior,
+including runtime dispatch, guard/cache lookup, allocation, submission cadence,
+and possible stream idle time. It cannot be decomposed into exact host-side
+costs from CUDA-event timing. Initial compilation was outside the timed region.
 
 The effective GB/s metric uses logical minimum traffic and repeated hot tensors;
 it is not used as evidence of HBM saturation. Full results and profiler
