@@ -26,12 +26,21 @@ SHAPES = [
 ]
 
 
+SHAPE_PRESETS = {
+    "wmma_shape_diagnostic": ["qwen_mlp_up_128", "mlp_down_128", "prefill_512_4096"],
+}
+
+
 def selected_shapes(names: list[str] | None = None) -> list[GemmShape]:
     if not names:
         return SHAPES
+    expanded_names = []
+    for name in names:
+        expanded_names.extend(SHAPE_PRESETS.get(name, [name]))
     by_name = {shape.name: shape for shape in SHAPES}
-    missing = sorted(set(names) - set(by_name))
+    missing = sorted(set(expanded_names) - set(by_name))
     if missing:
-        raise ValueError(f"Unknown shape names: {missing}")
-    return [by_name[name] for name in names]
+        known_presets = ", ".join(sorted(SHAPE_PRESETS))
+        raise ValueError(f"Unknown shape names: {missing}. Known presets: {known_presets}")
+    return [by_name[name] for name in expanded_names]
 

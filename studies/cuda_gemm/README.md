@@ -103,6 +103,14 @@ prefill and MLP shapes?
 python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --shapes prefill_128_4096 prefill_512_4096 mlp_up_128 mlp_down_128 qwen_mlp_up_128 --providers torch_matmul cuda_wmma cuda_wmma_block_tiled --no-write
 ```
 
+Hypothesis-driven diagnostic pass. This intentionally uses only three shapes:
+`qwen_mlp_up_128` where 64x32 block tiling helps, `mlp_down_128` where it
+regresses, and `prefill_512_4096` where it is roughly neutral/slightly positive.
+
+```bash
+python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --shapes wmma_shape_diagnostic --providers torch_matmul cuda_wmma cuda_wmma_block_tiled --no-write
+```
+
 If the default command is stable, run a focused large-shape pass:
 
 ```bash
@@ -131,7 +139,27 @@ python studies/cuda_gemm/profiler.py --provider all --no-write
 For a smaller profiler pass:
 
 ```bash
-python studies/cuda_gemm/profiler.py --providers torch_matmul cuda_wmma cuda_wmma_block_tiled --shapes prefill_128_4096 --no-write
+python studies/cuda_gemm/profiler.py --providers torch_matmul cuda_wmma cuda_wmma_block_tiled --shapes wmma_shape_diagnostic --no-write
+```
+
+PyTorch profiler shows launch/kernel timing but not enough architecture detail
+for Tensor Core utilization or occupancy. To print Nsight Compute commands for
+the three diagnostic shapes:
+
+```bash
+python studies/cuda_gemm/ncu_commands.py
+```
+
+Run the printed `ncu` commands only after the benchmark correctness pass is
+clean. Copy back the terminal output; do not commit generated reports from
+AutoDL.
+
+Recommended attribution questions:
+
+```text
+qwen_mlp_up_128: why does 64x32 block tiling help wide-N up projection?
+mlp_down_128: why does the same tile hurt down projection with large K?
+prefill_512_4096: why is the gain only modest on square-ish large GEMM?
 ```
 
 ## Metrics
@@ -162,3 +190,6 @@ python studies/cuda_gemm/profiler.py --providers torch_matmul cuda_wmma cuda_wmm
    not, use profiler evidence to explain whether the limit is occupancy,
    memory staging, warp scheduling, or insufficient work per CTA before moving
    to a CUTLASS-style redesign.
+8. Avoid broad tile sweeps until the three-shape diagnostic explains the
+   shape-dependent behavior. The next tile variants should be chosen from a
+   concrete hypothesis, not parameter search.
