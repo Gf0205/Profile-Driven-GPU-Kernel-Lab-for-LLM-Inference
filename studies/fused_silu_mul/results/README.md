@@ -1,14 +1,9 @@
 # Results
 
-Store machine-specific benchmark CSV files and profiler traces here.
+Raw benchmark CSV files and profiler traces are ignored and should not be
+committed. The normal workflow is:
 
-Suggested names:
-
-- `t4_fused_silu_mul.csv`
-- `rtx3090_fused_silu_mul.csv`
-- `profiler_t4/`
-- `profiler_rtx3090/`
-
-Do not edit benchmark numbers by hand. If a run is suspicious, rerun with the
-same command and keep the raw output.
-
+1. Run with `--no-write` on AutoDL RTX 4090.
+2. Return the complete terminal output to Codex.
+3. Check correctness and timing stability before interpreting performance.
+4. Commit only the curated table and analysis in the study README.

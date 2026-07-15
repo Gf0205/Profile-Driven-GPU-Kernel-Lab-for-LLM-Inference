@@ -90,25 +90,26 @@ Install dependencies on a CUDA machine:
 pip install -r requirements.txt
 ```
 
-Run the phase-1 CUDA GEMM benchmark on the real GPU validation machine. RTX
-The RTX 4090 is the official validation device for current project results.
+Run the active Fused SiLU-Mul study on the real GPU validation machine. The RTX
+4090 is the official validation device for current project results.
 Local Windows is used for code editing, docs, git, and result integration; it is
 not used for final CUDA/Triton performance conclusions.
 
 ```bash
-python studies/cuda_gemm/benchmark.py --dtype float16 --warmup 20 --repeat 100 --no-write
+python studies/fused_silu_mul/benchmark.py --dtype float16 --warmup 25 --repeat 100 --shapes silu_official_rtx4090 --no-write
 ```
 
 Run profiler evidence on AutoDL RTX 4090 without writing trace files:
 
 ```bash
-python studies/cuda_gemm/profiler.py --provider all --no-write
+python studies/fused_silu_mul/profiler.py --providers pytorch_unfused torch_compile triton --shapes silu_profile_diagnostic --no-write
 ```
 
-The CUDA GEMM benchmark reports latency, TFLOP/s, speedup vs naive CUDA, gap vs
-cuBLAS-backed `torch.matmul`, and correctness against `torch.matmul`.
+The Fused SiLU-Mul benchmark reports latency, effective GB/s, speedup over
+PyTorch unfused, gap versus `torch.compile`, repeat statistics, and correctness
+against an FP32 reference.
 
 When running on AutoDL or Colab, copy back the full terminal output, especially
-the `BEGIN_GEMM_CSV` / `END_GEMM_CSV` block and profiler tables. The
+the `BEGIN_BENCHMARK_CSV` / `END_BENCHMARK_CSV` block and profiler tables. The
 summary documents are updated locally from that returned output instead of
 committing generated result files from the cloud machine.

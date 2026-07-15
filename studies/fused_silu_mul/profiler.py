@@ -21,13 +21,14 @@ from studies.fused_silu_mul.shapes import selected_shapes  # noqa: E402
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Profile Fused SiLU-Mul providers.")
     parser.add_argument("--provider", choices=["all", *PROVIDERS.keys()], default="all")
+    parser.add_argument("--providers", nargs="*", default=None, choices=list(PROVIDERS))
     parser.add_argument("--dtype", choices=["float16", "bfloat16"], default="float16")
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument(
         "--shapes",
         nargs="*",
-        default=["llama7b_decode_b1", "llama7b_prefill_1024"],
+        default=["silu_profile_diagnostic"],
     )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument(
@@ -78,10 +79,12 @@ def main() -> None:
     if args.output_dir is not None and not args.no_write:
         args.output_dir.mkdir(parents=True, exist_ok=True)
     dtype = getattr(torch, args.dtype)
-    providers = list(PROVIDERS) if args.provider == "all" else [args.provider]
+    providers = args.providers or (list(PROVIDERS) if args.provider == "all" else [args.provider])
     print(
         f"ENV device={torch.cuda.get_device_name()} torch={torch.__version__} "
-        f"triton={triton.__version__} dtype={args.dtype} warmup={args.warmup} steps={args.steps}"
+        f"triton={triton.__version__} cuda={torch.version.cuda} "
+        f"capability={torch.cuda.get_device_capability()} dtype={args.dtype} "
+        f"warmup={args.warmup} steps={args.steps}"
     )
 
     for shape in selected_shapes(args.shapes):

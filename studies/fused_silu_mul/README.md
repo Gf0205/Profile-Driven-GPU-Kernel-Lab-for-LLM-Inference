@@ -1,4 +1,4 @@
-# Phase 1: Fused SiLU-Mul Operator Study
+# Fused SiLU-Mul Operator Study
 
 ## Operator
 
@@ -13,6 +13,11 @@ The study compares:
 1. `pytorch_unfused`: `torch.nn.functional.silu(gate) * up`
 2. `torch_compile`: the same expression through `torch.compile`
 3. `triton`: a single manual Triton kernel
+
+The experiment asks one bounded question: when does a manual Triton fusion add
+value over PyTorch eager execution, and when is `torch.compile` already the
+stronger practical implementation? The Triton block size remains fixed at 1024;
+this study is not a parameter sweep.
 
 ## Shape Sweep
 
@@ -34,25 +39,28 @@ sizes:
 | wide_mlp_decode_b1 | 1 | 28672 | decode |
 | wide_mlp_prefill_256 | 256 | 28672 | prefill |
 
+The official RTX 4090 preset contains six preselected shapes spanning one-token
+decode, batched decode, medium/large prefill, and two intermediate dimensions.
+
 ## Benchmark
 
-AutoDL RTX 3090 default command. It prints all result fields and writes no files,
-so later `git pull` remains clean:
+Run this correctness-first smoke test on AutoDL RTX 4090 after pulling the
+latest code. It prints to the terminal and writes no files:
 
 ```bash
-python studies/fused_silu_mul/benchmark.py --dtype float16 --warmup 50 --repeat 200 --no-write
+python studies/fused_silu_mul/benchmark.py --dtype float16 --warmup 5 --repeat 20 --shapes llama7b_decode_b1 llama7b_prefill_128 --no-write
 ```
 
-Google Colab T4 command:
+If every provider reports `correct=True`, run the official RTX 4090 sweep:
 
 ```bash
-python studies/fused_silu_mul/benchmark.py --dtype float16 --warmup 25 --repeat 100 --no-write
+python studies/fused_silu_mul/benchmark.py --dtype float16 --warmup 25 --repeat 100 --shapes silu_official_rtx4090 --no-write
 ```
 
 Optional BF16 run on GPUs with good BF16 support:
 
 ```bash
-python studies/fused_silu_mul/benchmark.py --dtype bfloat16 --warmup 50 --repeat 200 --no-write
+python studies/fused_silu_mul/benchmark.py --dtype bfloat16 --warmup 25 --repeat 100 --shapes silu_official_rtx4090 --no-write
 ```
 
 Metrics:
@@ -62,7 +70,7 @@ Metrics:
 - `gbps`: effective lower-bound traffic, `(gate read + up read + output write)`.
 - `speedup_vs_pytorch`: PyTorch unfused latency divided by provider latency.
 - `gap_vs_torch_compile`: provider latency divided by `torch.compile` latency.
-- `max_diff`: absolute max difference against the FP32 correctness reference.
+- `max_diff`, `rel_diff`, `correct`: correctness against the FP32 reference.
 
 Copy back:
 
@@ -76,14 +84,14 @@ Print profiler evidence for one decode and one prefill shape without writing
 trace files:
 
 ```bash
-python studies/fused_silu_mul/profiler.py --provider all --no-write
+python studies/fused_silu_mul/profiler.py --providers pytorch_unfused torch_compile triton --shapes silu_profile_diagnostic --no-write
 ```
 
 If a Chrome trace is explicitly needed on the cloud machine, omit `--no-write`
 and provide an output directory:
 
 ```bash
-python studies/fused_silu_mul/profiler.py --provider all --output-dir studies/fused_silu_mul/results/profiler_rtx3090
+python studies/fused_silu_mul/profiler.py --providers pytorch_unfused torch_compile triton --shapes silu_profile_diagnostic --output-dir studies/fused_silu_mul/results/profiler_rtx4090
 ```
 
 Expected analysis questions:
@@ -115,19 +123,13 @@ Expected analysis questions:
 
 ## Results Summary
 
-After returned cloud output has been saved locally as CSV, generate a Markdown
-table:
-
-```bash
-python studies/fused_silu_mul/summarize_results.py studies/fused_silu_mul/results/t4_fused_silu_mul.csv --output studies/fused_silu_mul/results/t4_summary.md
-```
-
-Paste the generated table here when promoting a run into the project README.
-Keep the raw CSV in `results/` as the source of truth.
+Raw AutoDL output is returned to Codex and is not committed. A reviewed subset
+of the official RTX 4090 run will be promoted into this table after correctness
+and timing stability are checked.
 
 | Shape | Regime | PyTorch ms | compile ms | Triton ms | Triton speedup vs PyTorch | Triton gap vs compile | Triton max_diff |
 |---|---|---:|---:|---:|---:|---:|---:|
-| pending T4/3090 run | - | - | - | - | - | - | - |
+| pending RTX 4090 run | - | - | - | - | - | - | - |
 
 ## Go/No-Go Criteria
 
